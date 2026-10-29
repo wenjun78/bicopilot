@@ -4,7 +4,7 @@
 > **Core stack:** Python, FastAPI, LangGraph, LangChain tool calling, SQLAlchemy, sqlglot, React, TypeScript, Vite, Recharts, Docker  
 > **Retrieval and data options:** BM25, embeddings, reciprocal rank fusion, reranking; SQLite or PostgreSQL; in-memory vectors, pgvector, or Milvus  
 > **Repository:** https://github.com/wenjun78/bicopilot  
-> **Live deployment supplied by the project owner:** https://bi-copilot-y4h6.onrender.com/  
+> **Live deployment supplied by the project owner:** https://bicopilot.onrender.com/  
 > **Related documentation:** [README](README.md) · [Business glossary](semantic/glossary.md) · [Metric definitions](semantic/metrics.yaml) · [Evaluation runner](eval/run.py)
 
 ## 1. Executive summary

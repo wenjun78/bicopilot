@@ -6,7 +6,7 @@
 # the `vector` extension) and set DATABASE_URL; the warehouse is loaded into it on first start.
 services:
   - type: web
-    name: bi-copilot
+    name: bicopilot
     runtime: docker
     plan: free
     region: singapore

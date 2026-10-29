@@ -13,7 +13,7 @@ const DEFAULT_SUGGESTIONS = [
   "revenue by region year over year FY2026",
   "what was the margin in EMEA",
 ];
-const LINKS = { source: "https://github.com/wenjun78/bicopilot", caseStudy: "https://wenjun78.github.io/portfolio/bi-copilot.html" };
+const LINKS = { source: "https://github.com/wenjun78/bicopilot", caseStudy: "https://wenjun78.github.io/portfolio/bicopilot.html" };
 
 const sessionId = `web-${Math.random().toString(36).slice(2, 10)}`;
 

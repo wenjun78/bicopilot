@@ -108,7 +108,7 @@ make report      # agents/reporting_agent.py: discovers the Agent Card, asks 6 q
 Every node appends to a trace (`/runs/{id}`), so the UI can show which agent did what, which chunks
 were retrieved and why (BM25 rank, dense rank, structured), every SQL attempt and the critic's verdict.
 
-![Trace tab: plan, agent timings, retrieval ranks, critic](docs/trace.png)
+![Trace tab: plan, agent timings, retrieval ranks, critic](https://raw.githubusercontent.com/wenjun78/bi-copilot/main/docs/trace.png)
 
 ## Design choices worth asking about
 

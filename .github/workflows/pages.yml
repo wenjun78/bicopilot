@@ -28,7 +28,7 @@ jobs:
       - run: cd web && npm ci && npm run build
         env:
           VITE_BASE: /bicopilot/
-          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://bi-copilot-y4h6.onrender.com' }}
+          VITE_API_URL: ${{ vars.VITE_API_URL || 'https://bicopilot.onrender.com' }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: web/dist

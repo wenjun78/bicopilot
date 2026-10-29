@@ -1,0 +1,488 @@
+"""Semantic layer: metric/dimension definitions, field mapping, ambiguity detection, and a
+deterministic SQL compiler.
+
+Two jobs:
+1. `resolve(question)` maps natural-language phrases to governed metric and dimension ids
+   (field mapping / indicator definition) and flags ambiguous phrases that need a clarifying question.
+2. `compile_sql(plan)` turns a structured Plan into SQL from the YAML definitions alone. The LLM
+   SQL writer receives this as a draft and refines it; with no LLM (fake provider) it is the answer.
+   Because every metric expression comes from metrics.yaml, "revenue" can never silently include
+   cancelled orders.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from functools import lru_cache
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, Field
+
+
+class Filter(BaseModel):
+    dimension: str
+    op: Literal["=", "!=", "in"] = "="
+    value: str | list[str]
+
+
+class TimeFilter(BaseModel):
+    fiscal_year: int | None = None
+    fiscal_quarter: int | None = None
+    year_month_from: str | None = None  # 'YYYY-MM'
+    year_month_to: str | None = None
+    label: str = ""  # how the question phrased it, e.g. "last quarter"
+
+
+class Plan(BaseModel):
+    """Output of the planner agent (Plan-and-Execute)."""
+
+    metrics: list[str] = Field(default_factory=list, description="metric ids from the semantic layer")
+    dimensions: list[str] = Field(default_factory=list, description="dimension ids to group by")
+    filters: list[Filter] = Field(default_factory=list)
+    time: TimeFilter | None = None
+    top_n: int | None = None
+    order: Literal["desc", "asc"] = "desc"
+    compare: Literal["yoy", "qoq"] | None = None
+    needs_clarification: bool = False
+    clarification: str = ""
+    options: list[str] = Field(default_factory=list)
+    steps: list[str] = Field(default_factory=list, description="execution steps the supervisor will follow")
+    unsupported_reason: str = ""
+
+
+@dataclass
+class Resolution:
+    metrics: list[str] = field(default_factory=list)
+    dimensions: list[str] = field(default_factory=list)
+    filters: list[Filter] = field(default_factory=list)
+    time: TimeFilter | None = None
+    top_n: int | None = None
+    order: str = "desc"
+    compare: str | None = None
+    ambiguous: dict[str, list[str]] = field(default_factory=dict)
+    matched_phrases: dict[str, str] = field(default_factory=dict)
+
+
+_WORD = r"(?<![a-z0-9]){}(?![a-z0-9])"
+TIME_PHRASES = [
+    r"\b(last|previous|prior|this|current)\s+(fiscal\s+)?(quarter|year)\b",
+    r"\bfy\s?(20)?\d{2}\b",
+    r"\b(fiscal\s+)?q[1-4]\b",
+    r"\bytd\b|\byear to date\b",
+    r"\b(last|past|trailing)\s+(12|twelve)\s+months\b",
+    r"\b(calendar\s+)?20\d{2}(-(0[1-9]|1[0-2]))?\b",
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+20\d{2}\b",
+    r"\b(yoy|qoq|year[- ]over[- ]year|quarter[- ]over[- ]quarter)\b",
+    r"\b(vs\.?|versus|compared (to|with)|against)\s+(last|previous|prior)\s+(year|quarter)\b",
+]
+MONTHS = {
+    m.lower(): i
+    for i, m in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)
+}
+MONTHS_FULL = {
+    m.lower(): i
+    for i, m in enumerate(
+        [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ],
+        1,
+    )
+}
+
+
+class SemanticLayer:
+    def __init__(self, spec: dict[str, Any]):
+        self.spec = spec
+        self.metrics: dict[str, dict] = spec["metrics"]
+        self.dimensions: dict[str, dict] = spec["dimensions"]
+        self.tables: dict[str, dict] = spec["tables"]
+        self.rules: list[dict] = spec.get("rules", [])
+        self.ambiguous: dict[str, list[str]] = spec.get("ambiguous", {})
+        self.fy_start = int(spec.get("fiscal_year_start_month", 4))
+        self._metric_phrases = self._phrase_index(self.metrics)
+        self._dimension_phrases = self._phrase_index(self.dimensions)
+        self._value_index = self._build_value_index()
+
+    # ----- loading ---------------------------------------------------------------------------
+    @classmethod
+    def load(cls, semantic_dir: Path) -> SemanticLayer:
+        return cls(yaml.safe_load((semantic_dir / "metrics.yaml").read_text(encoding="utf-8")))
+
+    def _phrase_index(self, items: dict[str, dict]) -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
+        for key, item in items.items():
+            phrases = {
+                key.replace("_", " "),
+                item.get("label", "").lower(),
+                *[a.lower() for a in item.get("aliases", [])],
+            }
+            for p in list(phrases):  # plural forms: rep -> reps, industry -> industries, country -> countries
+                if p and not p.endswith(("s", "%")):
+                    phrases.add(p[:-1] + "ies" if p.endswith("y") and not p.endswith("ay") else p + "s")
+            pairs.extend((p, key) for p in phrases if p)
+        return sorted(pairs, key=lambda p: -len(p[0]))  # longest phrase first
+
+    def _build_value_index(self) -> list[tuple[str, str, str]]:
+        idx = []
+        for dim, item in self.dimensions.items():
+            for v in item.get("values", []):
+                idx.append((str(v).lower(), dim, str(v)))
+        return sorted(idx, key=lambda p: -len(p[0]))
+
+    # ----- rendering for prompts -------------------------------------------------------------
+    def rules_text(self) -> str:
+        return "\n".join(f"- {r['text']}" for r in self.rules)
+
+    def metric_card(self, metric_id: str) -> str:
+        m = self.metrics[metric_id]
+        filt = " AND ".join(m.get("filters", [])) or "none"
+        return f"{metric_id} ({m['label']}): {m['sql']}; required filter: {filt}; {m['description']}"
+
+    def dimension_card(self, dim_id: str) -> str:
+        d = self.dimensions[dim_id]
+        values = f"; values: {', '.join(map(str, d['values']))}" if d.get("values") else ""
+        return f"{dim_id}: column {d['column']} (table {d['table']}){values}"
+
+    def catalog_text(self) -> str:
+        metrics = "\n".join(f"- {self.metric_card(m)}" for m in self.metrics)
+        dims = "\n".join(f"- {self.dimension_card(d)}" for d in self.dimensions)
+        return f"METRICS\n{metrics}\n\nDIMENSIONS\n{dims}"
+
+    # ----- fiscal calendar -------------------------------------------------------------------
+    def fiscal_of(self, d: date) -> tuple[int, int]:
+        fy = d.year + 1 if d.month >= self.fy_start else d.year
+        fq = ((d.month - self.fy_start) % 12) // 3 + 1
+        return fy, fq
+
+    def previous_quarter(self, fy: int, fq: int) -> tuple[int, int]:
+        return (fy, fq - 1) if fq > 1 else (fy - 1, 4)
+
+    # ----- field mapping ---------------------------------------------------------------------
+    def resolve(self, question: str, as_of: date) -> Resolution:
+        q = " " + re.sub(r"\s+", " ", question.lower().strip()) + " "
+        res = Resolution()
+        res.time = self._parse_time(q, as_of)
+        consumed = q
+        # time phrases are parsed separately; strip them so "last quarter" / "this year" do not match
+        # the fiscal_quarter / fiscal_year dimension aliases ("by quarter" and "monthly" still do)
+        for pat in TIME_PHRASES:
+            consumed = re.sub(pat, " ", consumed)
+
+        for phrase, key in self.ambiguous.items():
+            if re.search(_WORD.format(re.escape(phrase)), consumed):
+                # only ambiguous if no more specific phrase resolves it (e.g. "gross margin %" beats "margin")
+                specific = [
+                    p
+                    for p, k in self._metric_phrases
+                    if phrase in p and p != phrase and re.search(_WORD.format(re.escape(p)), consumed)
+                ]
+                if not specific:
+                    res.ambiguous[phrase] = list(key)
+
+        for phrase, key in self._metric_phrases:
+            if key in res.metrics:
+                continue
+            if re.search(_WORD.format(re.escape(phrase)), consumed):
+                res.metrics.append(key)
+                res.matched_phrases[key] = phrase
+                consumed = re.sub(_WORD.format(re.escape(phrase)), " ", consumed)
+
+        for phrase, key in self._dimension_phrases:
+            if key in res.dimensions:
+                continue
+            if re.search(_WORD.format(re.escape(phrase)), consumed):
+                res.dimensions.append(key)
+                res.matched_phrases[key] = phrase
+                consumed = re.sub(_WORD.format(re.escape(phrase)), " ", consumed)
+
+        for value_lc, dim, value in self._value_index:
+            if re.search(_WORD.format(re.escape(value_lc)), consumed):
+                res.filters.append(Filter(dimension=dim, value=value))
+                consumed = re.sub(_WORD.format(re.escape(value_lc)), " ", consumed)
+                if dim in res.dimensions and len([f for f in res.filters if f.dimension == dim]) == 1:
+                    # "revenue in APAC by region" -> keep grouping; "revenue in APAC" alone -> filter only
+                    pass
+
+        # a filter on a dimension removes it from group-by unless the question says "by <dim>"
+        for f in res.filters:
+            phrase = re.escape(res.matched_phrases.get(f.dimension, f.dimension))
+            if f.dimension in res.dimensions and not re.search(rf"\b(by|per|each|across)\s+{phrase}", q):
+                res.dimensions.remove(f.dimension)
+        # "Enterprise accounts", "Laptop products", "Gold tier customers": the noun after a filter value is
+        # descriptive, not a group-by
+        for f in res.filters:
+            value = (f.value if isinstance(f.value, str) else f.value[0]).lower()
+            for phrase, key in self._dimension_phrases:
+                if key in res.dimensions and re.search(
+                    _WORD.format(re.escape(value)) + r"\s+(\w+\s+)?" + re.escape(phrase) + r"(?![a-z0-9])", q
+                ):
+                    if not re.search(rf"\b(by|per|each|across)\s+{re.escape(phrase)}", q):
+                        res.dimensions.remove(key)
+
+        # a phrase that is ambiguous between a metric and a dimension (e.g. "customers") is a dimension
+        # whenever another metric is present: "top 5 customers by revenue" needs no clarification
+        for phrase, options in list(res.ambiguous.items()):
+            dims = [o for o in options if o in self.dimensions]
+            mets = [o for o in options if o in self.metrics]
+            if dims and mets and any(m not in mets for m in res.metrics):
+                del res.ambiguous[phrase]
+                for m in mets:
+                    if m in res.metrics:
+                        res.metrics.remove(m)
+                for d in dims:
+                    if d not in res.dimensions:
+                        res.dimensions.append(d)
+        m = re.search(r"\b(top|bottom|lowest|worst|best|largest|smallest|highest)\s+(\d{1,3})\b", q)
+        if m:
+            res.top_n = int(m.group(2))
+            if m.group(1) in ("bottom", "lowest", "worst", "smallest"):
+                res.order = "asc"
+        elif re.search(r"\b(top|best|largest|highest|most|biggest|leading)\b", q):
+            res.top_n = 10
+        elif re.search(r"\b(bottom|lowest|worst|smallest|fewest|least)\b", q):
+            res.top_n, res.order = 10, "asc"
+        fy_now, fq_now = self.fiscal_of(as_of)
+        if re.search(
+            r"\b(yoy|year[- ]over[- ]year|vs\.? last year|versus last year|compared (to|with) last year|against last year)\b",
+            q,
+        ):
+            res.compare = "yoy"
+            if res.time is None or res.time.label == "last fiscal year":
+                res.time = TimeFilter(fiscal_year=fy_now, label="this fiscal year vs last")
+            if res.time.fiscal_year == fy_now and not res.time.fiscal_quarter:
+                # the current fiscal year is incomplete: compare fiscal year-to-date with the same window last year
+                res.time.year_month_to = as_of.strftime("%Y-%m")
+                res.time.label = "fiscal year to date vs same period last year"
+        elif re.search(
+            r"\b(qoq|quarter[- ]over[- ]quarter|vs\.? last quarter|versus last quarter|compared (to|with) last quarter)\b",
+            q,
+        ):
+            res.compare = "qoq"
+            if res.time is None or res.time.label == "last quarter":
+                res.time = TimeFilter(fiscal_year=fy_now, fiscal_quarter=fq_now, label="this quarter vs last")
+        # "customers" alone is ambiguous between the dimension and active_customers; the metric wins
+        # only if no other metric is present.
+        if "customer" in res.dimensions and "active_customers" in res.metrics and len(res.metrics) > 1:
+            res.metrics.remove("active_customers")
+        return res
+
+    def _parse_time(self, q: str, as_of: date) -> TimeFilter | None:
+        fy_now, fq_now = self.fiscal_of(as_of)
+        t = TimeFilter()
+        m = re.search(r"\bfy\s?(20)?(\d{2})\b", q)
+        if m:
+            t.fiscal_year = int("20" + m.group(2))
+            t.label = m.group(0).strip()
+        elif re.search(r"\b(this|current) (fiscal )?year\b", q):
+            t.fiscal_year, t.label = fy_now, "this fiscal year"
+        elif re.search(r"\b(last|previous|prior) (fiscal )?year\b", q):
+            t.fiscal_year, t.label = fy_now - 1, "last fiscal year"
+        elif re.search(r"\bytd\b|year to date", q):
+            t.fiscal_year, t.label = fy_now, "fiscal year to date"
+            t.year_month_to = as_of.strftime("%Y-%m")
+        mq = re.search(r"\b(?:fiscal\s+)?q([1-4])\b", q)
+        if mq:
+            t.fiscal_quarter = int(mq.group(1))
+            if t.fiscal_year is None:
+                t.fiscal_year = fy_now if int(mq.group(1)) <= fq_now else fy_now - 1
+            t.label = (t.label + " " if t.label else "") + f"Q{mq.group(1)}"
+        elif re.search(r"\b(last|previous|prior) quarter\b", q):
+            t.fiscal_year, t.fiscal_quarter = self.previous_quarter(fy_now, fq_now)
+            t.label = "last quarter"
+        elif re.search(r"\b(this|current) quarter\b", q):
+            t.fiscal_year, t.fiscal_quarter, t.label = fy_now, fq_now, "this quarter"
+        if t.fiscal_year is None and t.fiscal_quarter is None:
+            ym = re.search(r"\b(20\d{2})-(0[1-9]|1[0-2])\b", q)
+            mon = re.search(r"\b(" + "|".join(list(MONTHS_FULL) + list(MONTHS)) + r")\s+(20\d{2})\b", q)
+            if ym:
+                t.year_month_from = t.year_month_to = ym.group(0)
+                t.label = ym.group(0)
+            elif mon:
+                month = MONTHS_FULL.get(mon.group(1)) or MONTHS[mon.group(1)]
+                t.year_month_from = t.year_month_to = f"{mon.group(2)}-{month:02d}"
+                t.label = mon.group(0)
+            elif re.search(r"\b(last|past|trailing) (12|twelve) months\b", q):
+                start = date(as_of.year - 1, as_of.month, 1)
+                t.year_month_from, t.year_month_to = start.strftime("%Y-%m"), as_of.strftime("%Y-%m")
+                t.label = "last 12 months"
+            else:
+                cal = re.search(r"\b(?:calendar )?(20\d{2})\b", q)
+                if cal:
+                    y = int(cal.group(1))
+                    t.year_month_from, t.year_month_to, t.label = f"{y}-01", f"{y}-12", f"calendar {y}"
+        return t if (t.fiscal_year or t.fiscal_quarter or t.year_month_from) else None
+
+    # ----- deterministic compiler ------------------------------------------------------------
+    def compile_sql(self, plan: Plan) -> tuple[str, list[str]]:
+        """Plan -> SQL using only semantic-layer definitions. Returns (sql, notes)."""
+        if plan.compare and plan.time and plan.time.fiscal_year:
+            return self._compile_comparison(plan)
+        return self._compile_simple(plan)
+
+    def _compile_comparison(self, plan: Plan) -> tuple[str, list[str]]:
+        """YoY / QoQ as two compiled periods joined on the dimensions, with absolute and % change."""
+        t = plan.time
+        assert t is not None and t.fiscal_year
+        if plan.compare == "qoq" and t.fiscal_quarter:
+            pfy, pfq = self.previous_quarter(t.fiscal_year, t.fiscal_quarter)
+            prev_time = TimeFilter(fiscal_year=pfy, fiscal_quarter=pfq)
+        else:
+            prev_time = TimeFilter(fiscal_year=t.fiscal_year - 1, fiscal_quarter=t.fiscal_quarter)
+            if t.year_month_to:  # year-to-date window shifted back 12 months
+                prev_time.year_month_to = f"{int(t.year_month_to[:4]) - 1}{t.year_month_to[4:]}"
+            if t.year_month_from:
+                prev_time.year_month_from = f"{int(t.year_month_from[:4]) - 1}{t.year_month_from[4:]}"
+        base = plan.model_copy(update={"compare": None, "top_n": None})
+        cur_sql, notes = self._compile_simple(base.model_copy(update={"time": t}))
+        prev_sql, _ = self._compile_simple(base.model_copy(update={"time": prev_time}))
+        dims = [d for d in plan.dimensions if d in self.dimensions]
+        metric = plan.metrics[0]
+        cur_sql, prev_sql = _strip_limit(cur_sql), _strip_limit(prev_sql)
+        if dims:
+            on = " AND ".join(f"cur.{d} = prev.{d}" for d in dims)
+            select_dims = ", ".join(f"cur.{d} AS {d}" for d in dims)
+            sql = (
+                f"SELECT {select_dims}, cur.{metric} AS current_period, prev.{metric} AS previous_period, "
+                f"cur.{metric} - prev.{metric} AS change, "
+                f"(cur.{metric} - prev.{metric}) * 100.0 / NULLIF(prev.{metric}, 0) AS change_pct\n"
+                f"FROM ({cur_sql}) cur\nLEFT JOIN ({prev_sql}) prev ON {on}\n"
+                f"ORDER BY current_period {plan.order.upper()}\nLIMIT {plan.top_n or 100}"
+            )
+        else:
+            sql = (
+                f"SELECT cur.{metric} AS current_period, prev.{metric} AS previous_period, "
+                f"cur.{metric} - prev.{metric} AS change, "
+                f"(cur.{metric} - prev.{metric}) * 100.0 / NULLIF(prev.{metric}, 0) AS change_pct\n"
+                f"FROM ({cur_sql}) cur, ({prev_sql}) prev"
+            )
+        label = (
+            f"FY{t.fiscal_year}"
+            + (f" Q{t.fiscal_quarter}" if t.fiscal_quarter else "")
+            + (f" to {t.year_month_to}" if t.year_month_to else "")
+        )
+        plabel = (
+            f"FY{prev_time.fiscal_year}"
+            + (f" Q{prev_time.fiscal_quarter}" if prev_time.fiscal_quarter else "")
+            + (f" to {prev_time.year_month_to}" if prev_time.year_month_to else "")
+        )
+        notes.append(f"{plan.compare.upper()}: current = {label}, previous = {plabel}")
+        return sql, notes
+
+    def _compile_simple(self, plan: Plan) -> tuple[str, list[str]]:
+        notes: list[str] = []
+        metrics = [m for m in plan.metrics if m in self.metrics]
+        if not metrics:
+            raise ValueError("plan has no known metric")
+        dims = [d for d in plan.dimensions if d in self.dimensions]
+        needed_tables: set[str] = set()
+        select: list[str] = []
+        group: list[str] = []
+        for d in dims:
+            spec = self.dimensions[d]
+            select.append(f"{spec['column']} AS {d}")
+            group.append(spec["column"])
+            needed_tables.add(spec["table"])
+        for m in metrics:
+            select.append(f"{self.metrics[m]['sql']} AS {m}")
+        where: list[str] = list(self.metrics[metrics[0]].get("filters", []))
+        for m in metrics[1:]:
+            if list(self.metrics[m].get("filters", [])) != where:
+                notes.append(f"metric {m} has a different status filter than {metrics[0]}; WHERE follows {metrics[0]}")
+        for f in plan.filters:
+            if f.dimension not in self.dimensions:
+                continue
+            spec = self.dimensions[f.dimension]
+            needed_tables.add(spec["table"])
+            if f.op == "in" and isinstance(f.value, list):
+                vals = ", ".join(_quote(v) for v in f.value)
+                where.append(f"{spec['column']} IN ({vals})")
+            else:
+                value = f.value if isinstance(f.value, str) else f.value[0]
+                where.append(f"{spec['column']} {f.op} {_quote(value)}")
+        if plan.time:
+            t = plan.time
+            needed_tables.add("dim_date")
+            if t.fiscal_year:
+                where.append(f"d.fiscal_year = {int(t.fiscal_year)}")
+            if t.fiscal_quarter:
+                where.append(f"d.fiscal_quarter = {int(t.fiscal_quarter)}")
+            if t.year_month_from:
+                where.append(f"d.year_month >= '{t.year_month_from}'")
+            if t.year_month_to:
+                where.append(f"d.year_month <= '{t.year_month_to}'")
+        joins = [
+            self.tables[tbl]["join"]
+            for tbl in ("dim_date", "dim_customer", "dim_product", "dim_sales_rep")
+            if tbl in needed_tables
+        ]
+        sql = "SELECT " + ", ".join(select) + "\nFROM fact_orders o\n" + ("\n".join(joins) + "\n" if joins else "")
+        if where:
+            sql += "WHERE " + " AND ".join(where) + "\n"
+        if group:
+            sql += "GROUP BY " + ", ".join(group) + "\n"
+            time_dims = [d for d in dims if self.dimensions[d].get("time")]
+            if plan.top_n or not time_dims:
+                sql += f"ORDER BY {metrics[0]} {plan.order.upper()}\n"
+            else:
+                sql += "ORDER BY " + ", ".join(self.dimensions[d]["column"] for d in time_dims) + "\n"
+            sql += f"LIMIT {plan.top_n or 100}"
+        if plan.compare:
+            notes.append("period comparison is not compiled deterministically; the SQL agent handles YoY/QoQ")
+        return sql.strip(), notes
+
+    def plan_from_resolution(self, res: Resolution) -> Plan:
+        plan = Plan(
+            metrics=res.metrics,
+            dimensions=res.dimensions,
+            filters=res.filters,
+            time=res.time,
+            top_n=res.top_n,
+            order=res.order,  # type: ignore[arg-type]
+            compare=res.compare,  # type: ignore[arg-type]
+        )
+        if res.ambiguous:
+            phrase, options = next(iter(res.ambiguous.items()))
+            plan.needs_clarification = True
+            plan.clarification = f'"{phrase}" can mean more than one metric. Which one?'
+            plan.options = [self.metrics[o]["label"] if o in self.metrics else o for o in options]
+        elif not res.metrics and res.dimensions:
+            plan.needs_clarification = True
+            plan.clarification = "Which metric should I use?"
+            plan.options = ["Revenue", "Orders", "Units sold", "Gross margin %"]
+        plan.steps = [
+            f"resolve metrics {plan.metrics or '?'} and dimensions {plan.dimensions or '[]'}",
+            "retrieve definitions and table docs",
+            "write and validate SQL",
+            "execute (read-only, row cap)",
+            "interpret results and propose a chart",
+            "critic check",
+        ]
+        return plan
+
+
+def _strip_limit(sql: str) -> str:
+    return re.sub(r"\s*LIMIT \d+\s*$", "", sql.strip())
+
+
+def _quote(value: str) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+@lru_cache(maxsize=4)
+def load_semantic(semantic_dir: str) -> SemanticLayer:
+    return SemanticLayer.load(Path(semantic_dir))

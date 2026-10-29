@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,milvus,redis]"
+      - run: ruff check . && ruff format --check .
+      - run: python data/generate.py
+      - name: Unit, graph and API tests (SQLite, in-memory vectors, Milvus Lite, lexical rerank, memory cache)
+        run: pytest -q
+      - name: Execution-accuracy eval (deterministic compiler must stay >= 90%)
+        run: python eval/run.py --min 0.9
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval/report.md
+
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: copilot
+          POSTGRES_PASSWORD: copilot
+          POSTGRES_DB: warehouse
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U copilot -d warehouse"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,redis]"
+      - run: python data/generate.py
+      - name: Same tests against Postgres + pgvector + Redis cache
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://copilot:copilot@localhost:5432/warehouse
+          TEST_CACHE_URL: redis://localhost:6379/0
+        run: pytest -q
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: cd web && npm ci && npm run build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t bi-copilot .
+      - name: Container answers the health check and a question
+        run: |
+          docker run -d --name bi -p 8080:8080 bi-copilot
+          for i in $(seq 1 30); do curl -fsS http://localhost:8080/healthz && break; sleep 2; done
+          curl -fsS -X POST http://localhost:8080/chat -H 'content-type: application/json' -d '{"question":"revenue by region FY2026"}' | grep -q '"status":"answered"'

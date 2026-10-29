@@ -1,0 +1,212 @@
+# Semantic layer: the single source of truth for "what does revenue mean here".
+# The agents never guess a metric definition; they resolve it from this file.
+# Edit this file, not the prompts, when the business changes a definition.
+
+version: 1
+currency: USD
+fiscal_year_start_month: 4          # FY2026 = 1 Apr 2025 .. 31 Mar 2026
+grain: order line                   # one row of fact_orders = one order line
+
+tables:
+  fact_orders:
+    alias: o
+    description: One row per order line. Status completed/cancelled/returned. Amounts in USD.
+    date_column: order_date
+  dim_date:
+    alias: d
+    description: Calendar with fiscal year/quarter (FY starts April). Join on fact_orders.order_date = dim_date.date_key.
+    join: "JOIN dim_date d ON o.order_date = d.date_key"
+  dim_customer:
+    alias: c
+    description: Customer master - segment, industry, country, region, tier, active flag.
+    join: "JOIN dim_customer c ON o.customer_id = c.customer_id"
+  dim_product:
+    alias: p
+    description: Product master - category, family, list price, unit cost.
+    join: "JOIN dim_product p ON o.product_id = p.product_id"
+  dim_sales_rep:
+    alias: r
+    description: Sales representatives with region and team.
+    join: "JOIN dim_sales_rep r ON o.sales_rep_id = r.sales_rep_id"
+  fact_targets:
+    alias: t
+    description: Revenue target per region per fiscal quarter.
+
+# Calibers (口径): business rules every query must respect. Injected into every SQL prompt.
+rules:
+  - id: completed_only
+    text: Revenue, margin, units and order counts include ONLY status = 'completed'. Cancelled and returned orders are excluded unless the question is about cancellations or returns.
+  - id: fiscal_calendar
+    text: 'The fiscal year starts 1 April. "FY2026" or "FY26" means 1 Apr 2025 to 31 Mar 2026. "Q1" without "calendar" means fiscal Q1 (Apr-Jun). Use dim_date.fiscal_year / fiscal_quarter / fiscal_period for any time grouping.' 
+  - id: currency
+    text: All amounts are USD. Do not convert.
+  - id: region_source
+    text: '"Region" means the customer''s region (dim_customer.region), not the sales rep''s region, unless the question is about reps or teams.' 
+  - id: relative_time
+    text: '"Last quarter" means the last COMPLETE fiscal quarter before the as-of date; "this year" means the current fiscal year as of the as-of date.' 
+  - id: top_n_default
+    text: '"Top customers / products" without a number means top 10, ordered by the metric descending.' 
+
+metrics:
+  revenue:
+    label: Revenue
+    sql: "SUM(o.net_amount)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: currency
+    aliases: [sales, net sales, net revenue, turnover, bookings, income, total sales, revenue amount]
+    description: Net amount of completed order lines (after discount), USD.
+  gross_margin:
+    label: Gross margin (USD)
+    sql: "SUM(o.net_amount - o.cost_amount)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: currency
+    aliases: [margin amount, gross profit, profit, gm]
+    description: Revenue minus cost of completed order lines, USD.
+  gross_margin_pct:
+    label: Gross margin %
+    sql: "SUM(o.net_amount - o.cost_amount) * 100.0 / NULLIF(SUM(o.net_amount), 0)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: percent
+    aliases: [margin %, margin percent, margin rate, gm%, gross margin percentage, profitability]
+    description: Gross margin as a percentage of revenue.
+  units_sold:
+    label: Units sold
+    sql: "SUM(o.quantity)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: integer
+    aliases: [units, volume, quantity sold, pieces]
+    description: Quantity on completed order lines.
+  order_count:
+    label: Orders
+    sql: "COUNT(DISTINCT o.order_id)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: integer
+    aliases: [number of orders, orders, order volume, how many orders, deals]
+    description: Count of completed orders.
+  avg_order_value:
+    label: Average order value
+    sql: "SUM(o.net_amount) / NULLIF(COUNT(DISTINCT o.order_id), 0)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: currency
+    aliases: [aov, average deal size, mean order value, average order size]
+    description: Revenue divided by completed orders.
+  active_customers:
+    label: Active customers
+    sql: "COUNT(DISTINCT o.customer_id)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: integer
+    aliases: [buying customers, customers with orders, customer count, number of customers]
+    description: Distinct customers with at least one completed order in the period.
+  avg_discount_pct:
+    label: Average discount %
+    sql: "AVG(o.discount_pct)"
+    base_table: fact_orders
+    filters: ["o.status = 'completed'"]
+    format: percent
+    aliases: [discount rate, average discount, discounting]
+    description: Mean discount percentage on completed order lines.
+  cancellation_rate:
+    label: Cancellation rate %
+    sql: "SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)"
+    base_table: fact_orders
+    filters: []
+    format: percent
+    aliases: [cancel rate, cancellations, cancelled %, cancelled orders rate]
+    description: Share of all order lines (any status) that were cancelled.
+  return_rate:
+    label: Return rate %
+    sql: "SUM(CASE WHEN o.status = 'returned' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)"
+    base_table: fact_orders
+    filters: []
+    format: percent
+    aliases: [returns, returned %, return percentage]
+    description: Share of all order lines that were returned.
+
+dimensions:
+  region:
+    column: c.region
+    table: dim_customer
+    aliases: [geo, market, territory, geography, area]
+    values: [APAC, EMEA, NA, LATAM]
+  country:
+    column: c.country
+    table: dim_customer
+    aliases: [nation, market country]
+  segment:
+    column: c.segment
+    table: dim_customer
+    aliases: [customer segment, customer type, sector]
+    values: [Enterprise, SMB, "Public Sector", Education]
+  industry:
+    column: c.industry
+    table: dim_customer
+    aliases: [vertical, industry vertical]
+  tier:
+    column: c.tier
+    table: dim_customer
+    aliases: [customer tier, account tier]
+    values: [Gold, Silver, Bronze]
+  customer:
+    column: c.customer_name
+    table: dim_customer
+    aliases: [customer name, account, client, accounts, clients, customers]
+  product_category:
+    column: p.category
+    table: dim_product
+    aliases: [category, product line, product type, line of business, lob]
+    values: [Laptop, Desktop, Server, Service, Accessory]
+  product_family:
+    column: p.family
+    table: dim_product
+    aliases: [family, product family, series]
+  product:
+    column: p.product_name
+    table: dim_product
+    aliases: [product name, sku, item, products, items]
+  channel:
+    column: o.channel
+    table: fact_orders
+    aliases: [sales channel, route to market, rtm]
+    values: [direct, partner, online]
+  status:
+    column: o.status
+    table: fact_orders
+    aliases: [order status]
+    values: [completed, cancelled, returned]
+  sales_rep:
+    column: r.rep_name
+    table: dim_sales_rep
+    aliases: [rep, representative, salesperson, seller, account manager]
+  team:
+    column: r.team
+    table: dim_sales_rep
+    aliases: [sales team]
+  fiscal_year:
+    column: d.fiscal_year
+    table: dim_date
+    aliases: [fy, year, financial year]
+    time: true
+  fiscal_quarter:
+    column: d.fiscal_period
+    table: dim_date
+    aliases: [quarter, fq, fiscal period, quarterly]
+    time: true
+  month:
+    column: d.year_month
+    table: dim_date
+    aliases: [monthly, month by month, per month, year month]
+    time: true
+
+# Resolver hints: a phrase that maps to more than one metric must trigger a clarifying question.
+ambiguous:
+  margin: [gross_margin, gross_margin_pct]
+  performance: [revenue, gross_margin_pct]
+  growth: [revenue, order_count, units_sold]
+  customers: [active_customers, customer]

@@ -1,0 +1,15 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+data/csv/
+data/warehouse.db*
+eval/report.md
+report.md
+!reports/
+web/node_modules/
+web/dist/
+.DS_Store

@@ -1,0 +1,46 @@
+# Render blueprint: New > Blueprint > pick this repo. One free Docker web service in Singapore.
+# After the first deploy, paste your OpenAI key into LLM_API_KEY (Environment tab). Everything else has a default.
+#
+# Storage: the synthetic warehouse is built into the image (SQLite). Question logs live in that SQLite file and
+# are lost on redeploy, which is fine for a demo. For persistent logs + pgvector, create a Neon Postgres (enable
+# the `vector` extension) and set DATABASE_URL; the warehouse is loaded into it on first start.
+services:
+  - type: web
+    name: bi-copilot
+    runtime: docker
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    envVars:
+      - key: LLM_PROVIDER
+        value: openai
+      - key: LLM_API_KEY
+        sync: false
+      - key: LLM_MODEL
+        value: gpt-5.6-sol
+      - key: LLM_REASONING_EFFORT
+        value: low
+      - key: EMBEDDING_PROVIDER
+        value: openai
+      - key: RERANKER
+        value: llm
+      - key: VECTOR_BACKEND
+        value: pgvector      # used only when DATABASE_URL is Postgres; falls back to in-memory otherwise
+      - key: DATABASE_URL
+        sync: false
+      - key: CACHE_URL
+        value: memory
+      - key: CORS_ORIGINS
+        value: https://wenjun78.github.io
+      - key: TRUSTED_PROXY_HOPS
+        value: "1"
+      - key: VISITOR_PER_MINUTE
+        value: "6"
+      - key: VISITOR_DAILY_LIMIT
+        value: "25"
+      - key: GLOBAL_DAILY_LIMIT
+        value: "300"
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: SECRET_SALT
+        generateValue: true

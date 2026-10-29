@@ -156,9 +156,9 @@ web/             React UI (Vite). web/dist is served by the API at /
 2. When asked for the values the blueprint leaves blank, paste your OpenAI key into `LLM_API_KEY`. Leave
    `DATABASE_URL` empty to run on the SQLite warehouse built into the image (question logs are lost on redeploy,
    fine for a demo); or paste a Neon Postgres URL with the `vector` extension enabled to persist logs and use pgvector.
-3. First deploy builds the UI and the image (~5 min). The service address is `https://bi-copilot-y4h6.onrender.com`
+3. First deploy builds the UI and the image (~5 min). The service address is `https://bicopilot.onrender.com`
    (Render adds a suffix if the name is taken; then set `CORS_ORIGINS`/`VITE_API_URL` accordingly).
-4. `python scripts/smoke_live.py https://bi-copilot-y4h6.onrender.com` — health, three questions, a clarification
+4. `python scripts/smoke_live.py https://bicopilot.onrender.com` — health, three questions, a clarification
    round trip, the agent card. A `FALLBACK:` line means the model path raised and the deterministic compiler
    answered instead; the service stays up either way.
 
@@ -168,7 +168,7 @@ minutes; the UI polls `/healthz` for up to 90 s while the server wakes and answe
 bundle meanwhile. A 5-minute uptime ping on `/healthz` keeps it warm.
 
 **UI on GitHub Pages**: `.github/workflows/pages.yml` builds `web/` with `VITE_BASE=/bicopilot/` and
-`VITE_API_URL` (repository variable; defaults to `https://bi-copilot-y4h6.onrender.com`) and publishes to
+`VITE_API_URL` (repository variable; defaults to `https://bicopilot.onrender.com`) and publishes to
 `https://<user>.github.io/bicopilot/`. The same build is copied into the portfolio site.
 
 ## Limits

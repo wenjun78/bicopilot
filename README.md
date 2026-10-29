@@ -16,7 +16,7 @@ what "revenue" means (completed orders only, net of discount, USD), that the fis
 that "region" is the customer's region and not the rep's. The model never guesses a definition. Change
 the YAML and every prompt, the deterministic compiler and the eval set follow.
 
-![Chat: answer, chart, clarification chips](docs/chat.png)
+![Chat: answer, chart, clarification chips](https://raw.githubusercontent.com/wenjun78/bi-copilot/main/docs/chat.png)
 
 Runs with **zero infrastructure** (SQLite, in-memory vectors, no API key: a deterministic compiler stands
 in for the model) and with **Postgres + pgvector + an LLM** for the real thing. Same code path either way.

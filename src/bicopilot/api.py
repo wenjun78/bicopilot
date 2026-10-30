@@ -82,7 +82,14 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
     def admin_page() -> FileResponse:
         if not settings.admin_token:
             raise HTTPException(503, "ADMIN_TOKEN must be configured to enable the dashboard")
-        return FileResponse(ADMIN_HTML, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"})
+        return FileResponse(
+            ADMIN_HTML,
+            headers={
+                "Cache-Control": "no-store",
+                "X-Robots-Tag": "noindex, nofollow",
+                "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+            },
+        )
 
     @app.post("/analytics/visit", status_code=204)
     def record_visit(data: VisitRequest, request: Request) -> Response:
@@ -94,8 +101,10 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
             raise HTTPException(403, "origin not allowed")
         try:
             request.app.state.analytics.record_visit(
-                data.visitor_id, data.session_id,
-                data.path, data.referrer,
+                data.visitor_id,
+                data.session_id,
+                data.path,
+                data.referrer,
             )
         except Exception:
             log.exception("failed to record visit")

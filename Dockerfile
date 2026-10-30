@@ -13,6 +13,7 @@ WORKDIR /srv
 COPY pyproject.toml ./
 COPY src ./src
 RUN pip install --no-cache-dir .
+COPY admin ./admin
 COPY semantic ./semantic
 COPY data/schema.sql data/generate.py ./data/
 COPY eval ./eval

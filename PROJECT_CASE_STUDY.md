@@ -349,3 +349,41 @@ A: First validate the real-model path against gold cases and adversarial queries
 ### Source-of-truth guidance
 
 The **implementation** and generated test artifacts take precedence over prose. For a claim about a particular deployment, inspect that deployment's settings and logs. This document is intended as a candid engineering explanation, not proof that every optional backend is active or that unmeasured business benefits occurred.
+
+## 13. Render configuration and owner analytics
+
+**Configuration versus verified runtime.** The Render Blueprint specifies `LLM_PROVIDER=openai`,
+`LLM_MODEL=gpt-5.6-sol`, `LLM_REASONING_EFFORT=low`, and a privately configured `LLM_API_KEY`.
+Model calls and OpenAI embeddings use that key; `EMBEDDING_PROVIDER=openai` and
+the default embedding model is `text-embedding-3-small`. `RERANKER=llm` requests LLM-based reranking.
+`VECTOR_BACKEND=pgvector` uses pgvector with PostgreSQL, otherwise the application
+uses in-memory vector search. `CACHE_URL=memory` selects the process-local cache.
+The app runs as a Docker/FastAPI and React service on Render in Singapore, with `/healthz` for health checks.
+
+The Blueprint configures 6 requests per minute and 25 per day per visitor,
+300 non-cached model requests per day site-wide, `CORS_ORIGINS=https://wenjun78.github.io`,
+and generated `ADMIN_TOKEN` and `SECRET_SALT` settings. Exact live values can differ
+from the checked-in Blueprint because Render Environment values may be edited independently.
+An OpenAI key does not prove the model was successfully invoked; the deterministic fallback
+can still answer supported queries and should not be counted as actual LLM accuracy.
+
+### Private owner dashboard
+
+The owner dashboard is implemented at `https://bicopilot.onrender.com/admin` using the
+main BI Copilot IBM Plex typography, blue accent, and automatic light/dark theme.
+It includes approximate unique browser visitors, page views, recent questions,
+daily activity, latency, response status, cache hits, and referral sources.
+
+The protected endpoints `GET /admin/api/overview`, `GET /runs`, and `GET /runs/{id}`
+require the `ADMIN_TOKEN` as a Bearer token. The public `POST /analytics/visit` endpoint
+records page loads. The `copilot_runs` table stores live question submissions, SQL, answers,
+status, session, time, and trace. The `copilot_visits` table stores UTC timestamps,
+salted hashes of browser-generated identifiers, session IDs, paths, and referral hosts.
+These counts do not establish individual human identities or capture static offline demo answers.
+
+With bundled SQLite, logs may be lost when Render restarts or redeploys. For durable
+question and visitor history, use a separate `bicopilot` PostgreSQL database within
+the existing Neon project used by Ask WJ, and configure `DATABASE_URL` privately on Render.
+The repository does not confirm that Neon is connected. The dashboard's successful
+GitHub tests do not prove the latest Render instance has deployed the route; a 404
+at `/admin` should be investigated against the running Render commit.

@@ -1,0 +1,32 @@
+# Deploys to Render on every push to main by calling the service's private Deploy Hook.
+# Render's own GitHub webhook has not fired for this repository, so this is the reliable path.
+#
+# One-time setup: Render → bicopilot → Settings → Deploy Hook → copy the URL, then
+# GitHub → this repo → Settings → Secrets and variables → Actions → New repository secret
+#   name:  RENDER_DEPLOY_HOOK
+#   value: https://api.render.com/deploy/srv-...?key=...
+# The workflow can also be started by hand from the Actions tab (Run workflow).
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: render-deploy
+  cancel-in-progress: false
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger the Render deploy
+        env:
+          HOOK: ${{ secrets.RENDER_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then
+            echo "::warning::RENDER_DEPLOY_HOOK secret is not set; skipping. See .github/workflows/deploy.yml for setup."
+            exit 0
+          fi
+          curl -fsS -X POST "$HOOK" -o /dev/null -w "Render deploy requested (HTTP %{http_code})\n"

@@ -123,10 +123,10 @@ The orchestration is in [``src/bicopilot/agents/graph.py``](src/bicopilot/agents
 
 ## 5. End-to-end implementation walkthrough
 
-**Example question:** “top 5 customers by gross margin last quarter”.
+**Example question:** “top 5 categories by revenue last quarter”.
 
 1. **Route.** The router identifies a warehouse-related data question.
-2. **Resolve.** The semantic resolver maps “gross margin” to the correct metric, “customers” to the customer dimension, “top 5” to descending ranking with a five-row limit, and “last quarter” to an explicit fiscal year/quarter using the as-of date.
+2. **Resolve.** The semantic resolver maps “revenue” to the delivered-order GMV metric, “categories” to the product category dimension, “top 5” to descending ranking with a five-row limit, and “last quarter” to calendar 2018-Q2 relative to the dataset's as-of date.
 3. **Plan.** The planner produces structured fields for metric, dimension, filters, period, ordering and clarification status. An LLM may refine the draft, but metric identifiers are checked against the semantic catalog.
 4. **Retrieve.** The retriever collects metric cards, table descriptions, and business definitions. BM25 matches exact field or metric names; embedding search helps with alternate phrasing; RRF combines ranks; reranking prioritizes the context handed to the SQL writer.
 5. **Explore.** The SQL agent can call read-only tools to describe an allowed table, sample valid values, or validate draft SQL. Real-model tool calls are bounded by configuration.
@@ -135,18 +135,20 @@ The orchestration is in [``src/bicopilot/agents/graph.py``](src/bicopilot/agents
 8. **Interpret and critique.** The analyst creates a summary and chart specification. A critic reviews the question, plan, SQL and selected results; a bounded revision may return control to the SQL agent.
 9. **Respond and trace.** The API returns the answer plus SQL, rows, attempts, retrieval metadata, tool steps, timing and agent trace.
 
-**Illustrative metric contract (simplified from the repository):**
+**Illustrative metric contract (from the Olist semantic layer):**
 
 ```yaml
-gross_margin:
-  sql: "SUM(o.net_amount - o.cost_amount)"
-  filters: ["o.status = 'completed'"]
+revenue:
+  label: Revenue (GMV)
+  base: fact_order_items
+  sql: "SUM(oi.price)"
+  filters: ["oi.status = 'delivered'"]
   format: currency
 ```
 
-This contract prevents the *deterministic compiler* from omitting the completed-order filter. **Important distinction:** a model-generated SQL statement is not independently proven to comply with every business definition merely because it passed the current SQL guard. The guard checks the SQL's structural restrictions; metric correctness is also evaluated against reference results.
+This contract instructs the deterministic compiler to sum item prices only on delivered order lines, in BRL and without freight. Grouping by product category joins `fact_order_items` to `dim_product`, while the time filter joins `dim_date`. **Important distinction:** a model-generated SQL statement is not independently proven to comply with every business definition merely because it passed the SQL guard. Structural restrictions and business correctness are evaluated separately.
 
-With the as-of date of **2018-08-31** (the last complete month in the data), “last quarter” resolves to **2018-Q2 (April–June 2018)** under the April-start fiscal calendar. This is a property of the chosen as-of date; other datasets or dates may resolve differently.
+With the as-of date of **2018-08-31** (the last complete month in the data), “last quarter” resolves to **calendar 2018-Q2 (April–June 2018)**. The Olist semantic layer explicitly sets `calendar: calendar` with **no fiscal-year offset**.
 
 ## 6. Technical concepts explained in this implementation
 
@@ -154,8 +156,8 @@ With the as-of date of **2018-08-31** (the last complete month in the data), “
 |---|---|---|
 | **Intelligent BI** | Business intelligence that accepts natural-language requests and explains structured data | Natural-language queries produce SQL, result rows, summaries and charts |
 | **NL-to-SQL / text-to-SQL** | Mapping a user's question to a database query | Planner → semantic SQL draft → optional model refinement → guard → execution |
-| **Semantic layer / governed metrics** | Centrally maintained business definitions independent of the model prompt | YAML expressions, aliases, mandatory filters, dimensions and fiscal rules |
-| **Data grain** | What one database row represents | ``fact_orders`` has an order-line grain, which matters for distinct-order metrics |
+| **Semantic layer / governed metrics** | Centrally maintained business definitions independent of the model prompt | YAML expressions, aliases, mandatory filters, dimensions and calendar rules |
+| **Data grain** | What one database row represents | ``fact_orders`` has one row per order; ``fact_order_items`` has one row per item line. The compiler chooses the appropriate base for each metric |
 | **RAG** | Retrieving relevant information and placing it in the model's context | The SQL agent receives metric and schema documentation selected for the question |
 | **Embeddings** | Numeric representations used to measure similarity between text | Optional model embeddings for dense semantic retrieval; a deterministic hash-based alternative is used without a key |
 | **BM25** | Lexical retrieval scoring that rewards matching query terms | Exact names and business terms can be found without depending on dense vectors |
@@ -392,8 +394,7 @@ can still answer supported queries and should not be counted as actual LLM accur
 
 ### Private owner dashboard
 
-The owner dashboard is implemented at `https://bicopilot.onrender.com/admin` using the
-main BI Copilot IBM Plex typography, blue accent, and automatic light/dark theme.
+The owner dashboard is implemented at `https://bicopilot.onrender.com/admin` using a separate owner layout. The public app now uses Instrument Sans, Instrument Serif and teal; matching these tokens in the admin dashboard is a separate interface update.
 It includes approximate unique browser visitors, page views, recent questions,
 daily activity, latency, response status, cache hits, and referral sources.
 

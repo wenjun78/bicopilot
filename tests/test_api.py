@@ -11,9 +11,11 @@ def test_healthz_and_catalog(client):
 def test_chat(client):
     r = client.post("/chat", json={"question": "top 5 customers by revenue FY2026", "session_id": "t1"}).json()
     assert r["status"] == "answered" and r["row_count"] == 5 and r["sql"]
-    runs = client.get("/runs").json()
+    auth = {"Authorization": "Bearer test-admin-token"}
+    assert client.get("/runs").status_code == 401
+    runs = client.get("/runs", headers=auth).json()
     assert runs[0]["session_id"] == "t1"
-    assert client.get(f"/runs/{runs[0]['id']}").json()["plan"]["top_n"] == 5
+    assert client.get(f"/runs/{runs[0]['id']}", headers=auth).json()["plan"]["top_n"] == 5
 
 
 def test_chat_validation(client):

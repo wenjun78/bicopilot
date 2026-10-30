@@ -39,7 +39,6 @@ export default function App() {
     try {
       const origin = API_BASE || window.location.origin;
       const visitorKey = "bicopilot_visitor_v1";
-      const sessionKey = "bicopilot_session_v1";
       const identifier = () => {
         const bytes = new Uint8Array(16);
         crypto.getRandomValues(bytes);
@@ -50,11 +49,6 @@ export default function App() {
         visitorId = identifier();
         localStorage.setItem(visitorKey, visitorId);
       }
-      let visitSession = sessionStorage.getItem(sessionKey);
-      if (!visitSession) {
-        visitSession = identifier();
-        sessionStorage.setItem(sessionKey, visitSession);
-      }
       const referrer = document.referrer ? (() => {
         try { return new URL(document.referrer).hostname; }
         catch { return "other"; }
@@ -64,7 +58,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           visitor_id: visitorId,
-          session_id: visitSession,
+          session_id: sessionId,
           path: window.location.pathname,
           referrer,
         }),

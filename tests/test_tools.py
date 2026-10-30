@@ -30,3 +30,19 @@ def test_sql_agent_explores_with_tools_before_writing(copilot):
     assert tools == ["describe_table", "sample_values", "validate_sql"]
     assert r["tool_steps"][1]["args"] == {"table": "dim_customer", "column": "customer_state"}
     assert r["status"] == "answered" and r["row_count"] > 0
+
+
+def test_explore_failure_does_not_break_the_model_path(copilot, monkeypatch):
+    """If the tool loop raises (e.g. the provider rejects function tools), the SQL agent still writes from the
+    compiler draft instead of the whole model path collapsing to the deterministic fallback."""
+
+    def boom(*_a, **_k):
+        raise RuntimeError("Function tools with reasoning_effort are not supported")
+
+    monkeypatch.setattr(copilot.llm, "react", boom)
+    copilot.cache.clear()
+    r = copilot.ask("revenue by state 2017", session_id="explore-fail")
+    assert r["status"] == "answered" and r["row_count"] > 0
+    explore = [e for e in r["trace"] if e.get("node") == "sql.explore"]
+    assert explore and "RuntimeError" in str(explore[0])
+    assert "deterministic fallback" not in (r.get("answer") or "").lower()

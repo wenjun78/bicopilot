@@ -7,6 +7,7 @@ database) is fed back as an observation and the model writes again, up to max_sq
 
 from __future__ import annotations
 
+import logging
 import time
 
 from langgraph.graph import END, START, StateGraph
@@ -18,6 +19,8 @@ from ..semantic import Plan
 from ..sqlguard import GuardError, guard
 from ..tools import build_tools
 from .state import BIState, Runtime, trace_event
+
+log = logging.getLogger("bicopilot")
 
 EXPLORE_SYSTEM = """You are the SQL agent of a BI copilot. Before writing SQL you may call tools to check a table's
 columns, sample a column's values (to spell filters correctly) or validate a draft against the guard. Call only
@@ -35,13 +38,21 @@ def build_sql_agent(rt: Runtime):
             return {"trace": trace_event(state, "sql.explore", started, skipped="repair")}
         plan = Plan.model_validate(state["plan"])
         user = f"QUESTION: {state['question']}\nAS-OF: {state['as_of']}\nPLAN:\n{plan.model_dump_json(indent=2)}"
-        draft, steps = rt.llm.react(
-            EXPLORE_SYSTEM.format(max_steps=rt.settings.max_tool_steps),
-            user,
-            tools,
-            rt.settings.max_tool_steps,
-            {"plan": plan},
-        )
+        try:
+            draft, steps = rt.llm.react(
+                EXPLORE_SYSTEM.format(max_steps=rt.settings.max_tool_steps),
+                user,
+                tools,
+                rt.settings.max_tool_steps,
+                {"plan": plan},
+            )
+        except Exception as exc:  # exploration is an aid; the write node has the compiler draft regardless
+            log.warning("exploration skipped: %s: %s", type(exc).__name__, exc)
+            return {
+                "tool_steps": [],
+                "explored_sql": "",
+                "trace": trace_event(state, "sql.explore", started, skipped=f"{type(exc).__name__}: {str(exc)[:160]}"),
+            }
         observations = [{"tool": s.tool, "args": s.args, "observation": s.observation[:800]} for s in steps]
         return {
             "tool_steps": observations,

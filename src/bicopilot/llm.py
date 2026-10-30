@@ -98,6 +98,11 @@ class OpenAILLM(LLM):
         if settings.llm_base_url:
             kwargs["base_url"] = settings.llm_base_url
         self.client = ChatOpenAI(**kwargs)
+        # Chat Completions rejects function tools together with reasoning_effort on the gpt-5.x models
+        # ("use /v1/responses or set reasoning_effort to 'none'"), so the ReAct tool loop gets its own client.
+        self.tool_client = (
+            ChatOpenAI(**{**kwargs, "reasoning_effort": "none"}) if "reasoning_effort" in kwargs else self.client
+        )
         self.last_usage: dict[str, int] = {}
 
     def structured(self, task: str, schema: type[T], system: str, user: str, context: dict[str, Any]) -> T:
@@ -117,7 +122,7 @@ class OpenAILLM(LLM):
         from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 
         by_name = {t.name: t for t in tools}
-        model = self.client.bind_tools(tools)
+        model = self.tool_client.bind_tools(tools)
         messages: list[Any] = [SystemMessage(system), HumanMessage(user)]
         steps: list[ToolStep] = []
         for _ in range(max_steps):

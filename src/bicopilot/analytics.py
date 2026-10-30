@@ -4,6 +4,7 @@ Only a salted browser identifier is stored, not raw IP addresses. This is
 best-effort page-load tracking, not identity tracking or a substitute for
 server-side monitoring. All timestamps are naive UTC for SQLite/Postgres.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -42,14 +43,16 @@ class SiteAnalytics:
         # Browser ID is never stored; hashes are stable only while SECRET_SALT stays unchanged.
         visitor_hash = hashlib.sha256(f"{self.secret_salt}:{visitor_id}".encode()).hexdigest()[:24]
         with self.engine.begin() as conn:
-            conn.execute(insert(visits).values(
+            conn.execute(
+                insert(visits).values(
                     id=str(uuid.uuid4()),
                     created_at=_utcnow(),
                     visitor_hash=visitor_hash,
                     session_id=session_id[:64],
                     path=path[:160],
                     referrer=referrer[:200],
-            ))
+                )
+            )
 
     def summary(self, days: int = 30) -> dict:
         now = _utcnow()

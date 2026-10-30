@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/api.ts","./src/demo.ts","./src/main.tsx","./src/vite-env.d.ts","./src/components/DictionaryView.tsx","./src/components/ExportMenu.tsx","./src/components/ResultView.tsx","./src/components/SqlConsole.tsx"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/api.ts","./src/demo.ts","./src/main.tsx","./src/vite-env.d.ts","./src/components/DictionaryView.tsx","./src/components/ExportMenu.tsx","./src/components/ResultView.tsx","./src/components/SchemaMap.tsx","./src/components/SqlConsole.tsx"],"version":"5.9.3"}

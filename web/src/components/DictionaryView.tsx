@@ -1,12 +1,14 @@
 import { useMemo, useState } from "react";
 import type { DictColumn, Dictionary } from "../api";
 import { fmt } from "./ResultView";
+import { parseJoins, SchemaMap } from "./SchemaMap";
 
 export function DictionaryView({ dictionary, onUseInConsole }: { dictionary: Dictionary | null; onUseInConsole: (sql: string) => void }) {
   const [q, setQ] = useState("");
-  const [table, setTable] = useState<string>("");
+  const [table, setTable] = useState<string>("map");
   const tables = dictionary?.tables ?? [];
-  const current = tables.find((t) => t.name === table) ?? tables[0];
+  const current = tables.find((t) => t.name === table);
+  const joins = useMemo(() => parseJoins(dictionary?.relationships ?? []), [dictionary]);
 
   const matches = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -52,30 +54,71 @@ export function DictionaryView({ dictionary, onUseInConsole }: { dictionary: Dic
         </div>
       ) : (
         <div className="dict-body">
-          <nav className="dict-nav" aria-label="Tables">
+          <nav className="dict-nav" aria-label="Dictionary sections">
+            <button type="button" className={`dict-tab ${table === "map" ? "active" : ""}`} onClick={() => setTable("map")}>
+              <span className="kind map" aria-hidden="true" /> How the tables join
+            </button>
+            <button type="button" className={`dict-tab ${table === "quality" ? "active" : ""}`} onClick={() => setTable("quality")}>
+              <span className="kind quality" aria-hidden="true" /> Known data-quality issues
+            </button>
+            <div className="dict-nav-group">Tables</div>
             {tables.map((t) => (
               <button key={t.name} type="button" className={`dict-tab ${current?.name === t.name ? "active" : ""}`} onClick={() => setTable(t.name)}>
                 <span className={`kind ${t.kind}`} aria-hidden="true" /> <code>{t.name}</code>
                 <span className="n">{t.row_count.toLocaleString()}</span>
               </button>
             ))}
-            <div className="dict-notes">
-              <h3>How the tables join</h3>
-              <ul>
-                {dictionary.relationships.map((r, i) => (
-                  <li key={i}>
-                    <code>{r}</code>
-                  </li>
-                ))}
-              </ul>
-              <h3>Known data-quality issues</h3>
-              <ul>
+          </nav>
+
+          {table === "map" && (
+            <div className="dict-table">
+              <h2>How the tables join</h2>
+              <p className="desc">
+                A star schema: the two fact tables hold what happened (orders, and the lines inside them); the dimensions describe who,
+                what and when. Payments and reviews hang off the order. Click a table to open it.
+              </p>
+              <SchemaMap tables={tables} joins={joins} onSelect={setTable} />
+              <table className="joins">
+                <thead>
+                  <tr>
+                    <th>From</th>
+                    <th>To</th>
+                    <th>Cardinality</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {joins.map((j, i) => (
+                    <tr key={i}>
+                      <td>
+                        <code>
+                          {j.from}.{j.fromCol}
+                        </code>
+                      </td>
+                      <td>
+                        <code>
+                          {j.to}.{j.toCol}
+                        </code>
+                      </td>
+                      <td className="muted">{j.note || "many to one"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {table === "quality" && (
+            <div className="dict-table">
+              <h2>Known data-quality issues</h2>
+              <p className="desc">What the loader found in the source files and how the warehouse handles it. The agents' answers already account for these.</p>
+              <ol className="quality">
                 {dictionary.quality_notes.map((n, i) => (
                   <li key={i}>{n}</li>
                 ))}
-              </ul>
+              </ol>
             </div>
-          </nav>
+          )}
+
           {current && (
             <div className="dict-table">
               <h2>
@@ -93,6 +136,11 @@ export function DictionaryView({ dictionary, onUseInConsole }: { dictionary: Dic
                 <button type="button" className="chip" onClick={() => onUseInConsole(`SELECT *\nFROM ${current.name}\nLIMIT 20`)}>
                   Preview in the SQL console
                 </button>
+                {joins.some((j) => j.from === current.name || j.to === current.name) && (
+                  <span className="muted small">
+                    Joins {Array.from(new Set(joins.filter((j) => j.from === current.name || j.to === current.name).map((j) => (j.from === current.name ? j.to : j.from)))).join(", ")}
+                  </span>
+                )}
               </div>
               <div className="dict-cols">
                 {current.columns.map((c) => (

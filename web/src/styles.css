@@ -265,7 +265,7 @@ pre.observation { background: var(--raised); border: 1px solid var(--line); bord
 .catalog .values { color: var(--muted); font-size: 12.5px; }
 
 /* ---------- SQL console ---------- */
-.console { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 20px; flex: 1; align-items: start; }
+.console { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 20px; flex: 1; align-items: start; }
 .schema { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 10px; max-height: calc(100vh - 140px); overflow: auto; position: sticky; top: 76px; }
 .schema-head { display: flex; flex-direction: column; margin: 0 6px 8px; }
 .schema-head strong { font-weight: 600; }
@@ -273,9 +273,19 @@ pre.observation { background: var(--raised); border: 1px solid var(--line); bord
 .schema-toggle:hover { background: var(--raised); }
 .schema-toggle code { background: none; padding: 0; font-size: 12.5px; }
 .schema-toggle .n { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.schema-cols { padding: 2px 6px 8px 24px; }
-.schema-col { padding: 3px 0; font-size: 13px; }
-.schema-col .samples { margin-left: 2px; }
+.schema-cols { padding: 2px 4px 10px 8px; }
+.schema-desc { color: var(--muted); font-size: 12.5px; line-height: 1.4; margin: 0 0 8px 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.col-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--line); }
+.col-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name type" "marks marks" "samples samples"; column-gap: 8px; padding: 5px 2px; border-bottom: 1px solid var(--line); align-items: baseline; }
+.col-name { grid-area: name; background: none; border: none; padding: 0; text-align: left; font-family: var(--mono); font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-name:hover { color: var(--primary); text-decoration: underline; }
+.col-type { grid-area: type; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
+.col-marks { grid-area: marks; display: flex; gap: 4px; flex-wrap: wrap; }
+.col-marks:empty { display: none; }
+.mark { font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 4px; background: var(--raised); color: var(--muted); border: 1px solid var(--line); }
+.mark.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.col-samples { grid-area: samples; color: var(--muted); font-size: 11.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; }
+.col-marks + .col-samples, .col-type + .col-marks { margin-top: 3px; }
 .kind { display: inline-block; width: 9px; height: 9px; border-radius: 2px; flex: 0 0 auto; }
 .kind.fact { background: var(--primary); }
 .kind.dimension { border: 1.5px solid var(--primary); }
@@ -313,6 +323,29 @@ button.primary:disabled { background: var(--line); color: var(--muted); }
 .dict-tab.active { background: var(--tint); color: var(--tint-ink); }
 .dict-tab code { background: none; padding: 0; font-size: 12.5px; }
 .dict-tab .n { margin-left: auto; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.dict-nav-group { color: var(--muted); font-size: 12.5px; padding: 14px 10px 4px; }
+.kind.map { background: linear-gradient(135deg, var(--primary) 50%, transparent 50%); border: 1.5px solid var(--primary); }
+.kind.quality { background: var(--warn); }
+.schema-map { width: 100%; height: auto; display: block; margin: 16px 0 8px; font-family: var(--sans); }
+.schema-map .node rect { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.2; }
+.schema-map .node.fact rect { fill: var(--tint); stroke: var(--primary); }
+.schema-map .node:hover rect, .schema-map .node:focus-visible rect { stroke: var(--primary); stroke-width: 1.8; }
+.schema-map .node:focus-visible { outline: none; }
+.schema-map .name { font-family: var(--mono); font-size: 11px; fill: var(--ink); font-weight: 500; }
+.schema-map .rows { font-size: 10.5px; fill: var(--muted); }
+.schema-map .join line { stroke: var(--line-strong); stroke-width: 1.4; }
+.schema-map .join:hover line { stroke: var(--primary); stroke-width: 2; }
+.schema-map .one { fill: var(--surface); stroke: var(--line-strong); stroke-width: 1.4; }
+.schema-map .join:hover .one { stroke: var(--primary); }
+.schema-map .key { font-family: var(--mono); font-size: 10px; fill: var(--muted); paint-order: stroke; stroke: var(--surface); stroke-width: 4px; stroke-linejoin: round; }
+.schema-map .join:hover .key { fill: var(--primary); }
+.schema-map .legend text { font-size: 11px; fill: var(--muted); }
+.schema-map .fact-swatch { fill: var(--tint); stroke: var(--primary); }
+.schema-map .dim-swatch { fill: var(--surface); stroke: var(--line-strong); }
+table.joins { margin-top: 12px; font-size: 13px; }
+table.joins td, table.joins th { white-space: normal; overflow-wrap: anywhere; }
+table.joins code { background: none; padding: 0; font-size: 12.5px; }
+ol.quality { margin: 12px 0 0; padding-left: 22px; color: var(--ink-2); display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
 .dict-notes { margin-top: 18px; padding: 0 10px; font-size: 13px; }
 .dict-notes h3 { font-size: 13px; font-weight: 500; color: var(--muted); margin: 12px 0 4px; }
 .dict-notes ul { padding-left: 16px; margin: 0; color: var(--ink-2); }

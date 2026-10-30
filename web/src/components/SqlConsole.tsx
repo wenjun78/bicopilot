@@ -124,21 +124,29 @@ export function SqlConsole({
             </button>
             {open === t.name && (
               <div className="schema-cols">
-                <p className="small muted">{t.description}</p>
-                {t.columns.map((c) => (
-                  <div key={c.name} className="schema-col" title={c.description}>
-                    <button type="button" className="link mono" onClick={() => insert(`${t.name}.${c.name}`)}>
-                      {c.name}
-                    </button>
-                    <span className="muted small"> {c.type.toLowerCase()}</span>
-                    {c.primary_key && <span className="tag">key</span>}
-                    {c.joins_to && <span className="tag">joins {c.joins_to.split(".")[0]}</span>}
-                    {c.masked_for_viewer && <span className="tag warn">masked</span>}
-                    {c.samples.length > 0 && c.samples[0].count !== null && (
-                      <div className="samples small muted">{c.samples.slice(0, 5).map((s) => s.value).join(", ")}</div>
-                    )}
-                  </div>
-                ))}
+                <p className="schema-desc" title={t.description}>
+                  {t.description}
+                </p>
+                <ul className="col-list">
+                  {t.columns.map((c) => (
+                    <li key={c.name} className="col-row" title={c.description}>
+                      <button type="button" className="col-name" onClick={() => insert(`${t.name}.${c.name}`)}>
+                        {c.name}
+                      </button>
+                      <span className="col-type">{c.type.toLowerCase().replace("varchar", "text")}</span>
+                      <span className="col-marks">
+                        {c.primary_key && <span className="mark" title="primary key">key</span>}
+                        {c.joins_to && <span className="mark" title={`joins ${c.joins_to}`}>→ {c.joins_to.split(".")[0].replace(/^(dim|fact)_/, "")}</span>}
+                        {c.masked_for_viewer && <span className="mark warn" title="masked for the viewer role">masked</span>}
+                      </span>
+                      {c.samples.length > 0 && c.samples[0].count !== null && (
+                        <span className="col-samples" title={c.samples.map((s) => s.value).join(", ")}>
+                          {c.samples.slice(0, 6).map((s) => s.value).join(", ")}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
           </div>

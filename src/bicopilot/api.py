@@ -215,6 +215,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         return JSONResponse({"jsonrpc": "2.0", "id": req_id, "result": task})
 
     # ----- UI ---------------------------------------------------------------------------------
+    app.mount("/admin", StaticFiles(directory=ROOT / "admin"), name="admin-assets")
     if WEB_DIST.exists():
         app.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
         demo_dir = WEB_DIST / "demo"

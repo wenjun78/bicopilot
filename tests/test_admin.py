@@ -1,4 +1,5 @@
 """Owner analytics, authentication, persistence, and anonymous visit tracking."""
+
 from __future__ import annotations
 
 import uuid
@@ -25,8 +26,7 @@ def test_private_dashboard_and_summary_auth(client):
 def test_anonymous_visits_are_aggregated(client):
     visitor_id = uuid.uuid4().hex
     url = "/analytics/visit"
-    body = {"visitor_id": visitor_id, "session_id": "session-123",
-            "path": "/portfolio-demo", "referrer": "example.com"}
+    body = {"visitor_id": visitor_id, "session_id": "session-123", "path": "/portfolio-demo", "referrer": "example.com"}
     for _ in range(2):
         assert client.post(url, json=body).status_code == 204
     overview = client.get("/admin/api/overview?days=7", headers=_auth()).json()

@@ -33,6 +33,47 @@ export default function App() {
   const suggestions = demo?.suggestions ?? DEFAULT_SUGGESTIONS;
 
   useEffect(() => {
+    // Anonymous page-load tracking; never send raw IP, user agent, or identity.
+    // localStorage identifies this browser; sessionStorage identifies the current tab.
+    // Failures are silent: analytics must never prevent the public demo from loading.
+    try {
+      const origin = API_BASE || window.location.origin;
+      const visitorKey = "bicopilot_visitor_v1";
+      const sessionKey = "bicopilot_session_v1";
+      const identifier = () => {
+        const bytes = new Uint8Array(16);
+        crypto.getRandomValues(bytes);
+        return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+      };
+      let visitorId = localStorage.getItem(visitorKey);
+      if (!visitorId) {
+        visitorId = identifier();
+        localStorage.setItem(visitorKey, visitorId);
+      }
+      let visitSession = sessionStorage.getItem(sessionKey);
+      if (!visitSession) {
+        visitSession = identifier();
+        sessionStorage.setItem(sessionKey, visitSession);
+      }
+      const referrer = document.referrer ? (() => {
+        try { return new URL(document.referrer).hostname; }
+        catch { return "other"; }
+      })() : "direct";
+      void fetch(origin + "/analytics/visit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          visitor_id: visitorId,
+          session_id: visitSession,
+          path: window.location.pathname,
+          referrer,
+        }),
+        keepalive: true,
+      }).catch(() => undefined);
+    } catch { /* private mode and blocked storage are supported */ }
+  }, []);
+
+  useEffect(() => {
     // Live API when one is configured and answers; the pre-computed bundle covers the gap while a
     // free-tier server wakes up (up to ~90 s) and takes over entirely if the API never answers.
     const useDemo = () => loadDemo(import.meta.env.BASE_URL).then(setDemo).catch(() => setDemo(null));

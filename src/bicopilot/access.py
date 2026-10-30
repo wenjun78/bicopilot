@@ -57,6 +57,9 @@ def rewrite_sql(sql: str, policy: Policy, dialect: str) -> tuple[str, list[str]]
     if not policy.active:
         return sql, []
     masked_cols = policy.masked_columns()
+    from .sqlguard import DIALECT_MAP
+
+    dialect = DIALECT_MAP.get(dialect, dialect)  # SQLAlchemy says "postgresql", sqlglot says "postgres"
     tree = sqlglot.parse_one(sql, read=dialect)
     hits: list[str] = []
     for col in list(tree.find_all(exp.Column)):

@@ -396,3 +396,26 @@ ol.quality { margin: 12px 0 0; padding-left: 22px; color: var(--ink-2); display:
   .tabs .meta { margin-left: 0; width: 100%; }
   .kpi-value { font-size: 38px; }
 }
+
+/* ---------- how this was calculated ---------- */
+.method { margin-top: 12px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--raised); }
+.method-toggle { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: none; border: none; padding: 8px 12px; color: var(--ink-2); font-size: 13.5px; font-weight: 500; }
+.method-toggle:hover { color: var(--primary); }
+.chev { width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform 0.15s ease; flex: 0 0 auto; }
+.method.open .chev { transform: rotate(45deg); }
+.method-peek { color: var(--muted); font-weight: 400; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
+.method-body { padding: 2px 12px 12px 26px; }
+.method-sentence { font-size: 14px; color: var(--ink); margin-bottom: 10px; }
+.method-grid { margin: 0; display: flex; flex-direction: column; gap: 8px; }
+.method-row { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 10px; font-size: 13.5px; }
+.method-row dt { color: var(--muted); }
+.method-row dd { margin: 0; color: var(--ink-2); }
+.formula { display: block; margin: 4px 0; font-size: 12px; color: var(--ink); background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 4px 8px; overflow-wrap: anywhere; }
+.stages .elapsed { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.site-foot { display: flex; justify-content: space-between; gap: 12px 20px; flex-wrap: wrap; width: 100%; max-width: 1240px; margin: 0 auto; padding: 14px 24px 18px; color: var(--muted); font-size: 12.5px; }
+.site-foot .links { display: inline-flex; gap: 16px; flex-wrap: wrap; }
+@media (max-width: 640px) {
+  .method-row { grid-template-columns: 1fr; gap: 2px; }
+  .method-peek { display: none; }
+  .site-foot { padding: 12px 16px 16px; }
+}

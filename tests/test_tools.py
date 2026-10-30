@@ -22,8 +22,9 @@ def test_validate_sql_tool_uses_guard(copilot):
 
 
 def test_sql_agent_explores_with_tools_before_writing(copilot):
+    # "kindly" is not a word the semantic layer explains, so this leaves the fast path and the ReAct loop runs
     copilot.cache.clear()
-    r = copilot.ask("revenue by city in SP 2017")
+    r = copilot.ask("revenue by city in SP 2017 kindly")
     nodes = [e["node"] for e in r["trace"]]
     assert nodes.index("sql.explore") < nodes.index("sql.write")
     tools = [s["tool"] for s in r["tool_steps"]]
@@ -41,7 +42,7 @@ def test_explore_failure_does_not_break_the_model_path(copilot, monkeypatch):
 
     monkeypatch.setattr(copilot.llm, "react", boom)
     copilot.cache.clear()
-    r = copilot.ask("revenue by state 2017", session_id="explore-fail")
+    r = copilot.ask("revenue by state 2017 kindly", session_id="explore-fail")  # "kindly" keeps it off the fast path
     assert r["status"] == "answered" and r["row_count"] > 0
     explore = [e for e in r["trace"] if e.get("node") == "sql.explore"]
     assert explore and "RuntimeError" in str(explore[0])

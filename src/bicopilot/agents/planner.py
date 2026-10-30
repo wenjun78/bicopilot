@@ -44,11 +44,29 @@ def build_planner(rt: Runtime):
                     draft.metrics = [mid]
                     draft.needs_clarification, draft.clarification, draft.options = False, "", []
                     break
+        # Confident resolution: the layer named the metric, nothing was ambiguous, no word of the question was
+        # left unexplained and nothing extra (attachment, clarification reply) is in play -> deterministic plan
+        # and SQL, model only for the analysis and the critic. This is what makes the common question fast.
+        fast = bool(
+            draft.metrics
+            and not draft.needs_clarification
+            and not res.ambiguous
+            and not res.residual
+            and not state.get("attachment_text")
+            and state.get("intent") != "clarification_reply"
+        )
         return {
             "question": question,
             "draft_plan": draft.model_dump(),
+            "fast_path": fast,
             "trace": trace_event(
-                state, "planner.resolve", started, matched=res.matched_phrases, ambiguous=res.ambiguous
+                state,
+                "planner.resolve",
+                started,
+                matched=res.matched_phrases,
+                ambiguous=res.ambiguous,
+                unexplained=res.residual,
+                fast_path=fast,
             ),
         }
 
@@ -65,7 +83,7 @@ def build_planner(rt: Runtime):
             user += f"\n\nATTACHED CONTEXT (from a pasted file; use it to fill in metrics, periods, categories or filters the question refers to):\n{state['attachment_text'][:3000]}"
         if state.get("policy_note"):
             user += f"\n\n{state['policy_note']}"
-        if isinstance(rt.llm, FakeLLM):
+        if isinstance(rt.llm, FakeLLM) or state.get("fast_path"):
             final = draft
         else:
             final = rt.llm.structured("plan", Plan, system, user, {"draft_plan": draft, "question": state["question"]})
@@ -90,6 +108,9 @@ def build_planner(rt: Runtime):
                 metrics=final.metrics,
                 dimensions=final.dimensions,
                 clarify=final.needs_clarification,
+                model="skipped (confident resolution)"
+                if state.get("fast_path") and not isinstance(rt.llm, FakeLLM)
+                else "used",
             ),
         }
 

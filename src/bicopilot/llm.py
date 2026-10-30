@@ -43,6 +43,7 @@ class AnalysisOut(BaseModel):
     insights: list[str] = Field(default_factory=list)
     chart: ChartSpec = Field(default_factory=ChartSpec)
     caveats: list[str] = Field(default_factory=list)
+    method: str = ""  # how the number was computed, in one plain sentence
 
 
 class CriticOut(BaseModel):
@@ -173,6 +174,9 @@ class FakeLLM(LLM):
         steps.append(ToolStep("validate_sql", {"sql": draft}, str(by_name["validate_sql"].invoke({"sql": draft}))))
         return draft, steps
 
+    def method_sentence(self, plan: Plan) -> str:
+        return _method_sentence(self.semantic, plan)
+
     def structured(self, task: str, schema: type[T], system: str, user: str, context: dict[str, Any]) -> T:
         global CURRENCY
         CURRENCY = str(self.semantic.spec.get("currency", "USD"))
@@ -221,13 +225,41 @@ class FakeLLM(LLM):
         if schema is AnalysisOut:
             plan: Plan = context["plan"]
             fmt = self.semantic.metrics.get(plan.metrics[0], {}).get("format", "number") if plan.metrics else "number"
-            return _fake_analysis(context, fmt)  # type: ignore[return-value]
-        if schema is CriticOut:
+            out = _fake_analysis(context, fmt)
+            out.method = self.method_sentence(plan)
+            return out  # type: ignore[return-value]
+        if schema is CriticOut:  # noqa: SIM102 - keep the branches parallel
             rows = context.get("row_count", 0)
             if rows == 0 and not context.get("critic_looped"):
                 return CriticOut(verdict="revise", reason="query returned no rows", fix_hint="loosen the time filter")  # type: ignore[return-value]
             return CriticOut(verdict="pass")  # type: ignore[return-value]
         raise NotImplementedError(schema.__name__)
+
+
+def _method_sentence(semantic: SemanticLayer, plan: Plan) -> str:
+    d = semantic.method_detail(plan)
+    if not d["metrics"]:
+        return ""
+    m = d["metrics"][0]
+    parts = [m["definition"].rstrip(".") if m["definition"] else m["label"]]
+    if m["filters"]:
+        parts.append("counting " + " and ".join(_filter_words(f) for f in m["filters"]))
+    parts.append(f"for {d['period']}")
+    if d["grouping"]:
+        parts.append("grouped by " + ", ".join(d["grouping"]))
+    if d["filters"]:
+        parts.append("where " + " and ".join(d["filters"]))
+    return ", ".join(parts) + "."
+
+
+def _filter_words(sql_filter: str) -> str:
+    words = sql_filter.split(".", 1)[-1] if "." in sql_filter else sql_filter
+    return (
+        words.replace("status = 'delivered'", "delivered orders only")
+        .replace("IS NOT NULL", "is recorded")
+        .replace("_", " ")
+        .replace("'", "")
+    )
 
 
 def _fake_analysis(context: dict[str, Any], fmt: str = "number") -> AnalysisOut:

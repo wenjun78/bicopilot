@@ -39,6 +39,20 @@ export type ChatResult = {
   role?: string;
   masked_columns?: string[];
   attachments?: { kind: string; filename: string; chars: number; note?: string }[];
+  method?: MethodDetail | null;
+};
+
+export type MethodDetail = {
+  sentence: string;
+  metrics: { id: string; label: string; definition: string; formula: string; base: string; filters: string[]; format: string }[];
+  period: string;
+  grouping: string[];
+  filters: string[];
+  top_n: number | null;
+  order: string;
+  calendar: string;
+  as_of: string;
+  sql?: string | null;
 };
 
 export type Catalog = {

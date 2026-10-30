@@ -36,6 +36,12 @@ def build_sql_agent(rt: Runtime):
         started = time.perf_counter()
         if state.get("sql_attempts"):  # repairs reuse the first exploration
             return {"trace": trace_event(state, "sql.explore", started, skipped="repair")}
+        if state.get("fast_path"):
+            return {
+                "tool_steps": [],
+                "explored_sql": "",
+                "trace": trace_event(state, "sql.explore", started, skipped="confident resolution"),
+            }
         plan = Plan.model_validate(state["plan"])
         user = f"QUESTION: {state['question']}\nAS-OF: {state['as_of']}\nPLAN:\n{plan.model_dump_json(indent=2)}"
         try:
@@ -69,6 +75,17 @@ def build_sql_agent(rt: Runtime):
         except ValueError as exc:
             draft_sql, draft_notes = "", [str(exc)]
         hint = state.get("critic_hint", "")
+        if state.get("fast_path") and draft_sql and not attempts and not hint:
+            return {
+                "sql": draft_sql,
+                "trace": trace_event(
+                    state,
+                    "sql.write",
+                    started,
+                    attempt=1,
+                    rationale="compiled from the semantic layer (confident resolution)",
+                ),
+            }
         error_block = format_error_block(attempts)
         if hint:
             error_block += f"\nCRITIC FEEDBACK: {hint}\n"

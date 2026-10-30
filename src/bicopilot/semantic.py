@@ -57,6 +57,7 @@ class Plan(BaseModel):
 @dataclass
 class Resolution:
     metrics: list[str] = field(default_factory=list)
+    residual: list[str] = field(default_factory=list)  # question words the resolver could not account for
     dimensions: list[str] = field(default_factory=list)
     filters: list[Filter] = field(default_factory=list)
     time: TimeFilter | None = None
@@ -199,6 +200,58 @@ class SemanticLayer:
 
     def previous_quarter(self, fy: int, fq: int) -> tuple[int, int]:
         return (fy, fq - 1) if fq > 1 else (fy - 1, 4)
+
+    def method_detail(self, plan: Plan) -> dict[str, Any]:
+        """How a plan's figure is computed, straight from the semantic layer: definition, formula, mandatory
+        filters, the period it resolved to, the grouping and the question's own filters. Deterministic, so a
+        business reader can audit the number even when the model is unavailable."""
+        metrics = []
+        for mid in plan.metrics:
+            m = self.metrics.get(mid)
+            if not m:
+                continue
+            metrics.append(
+                {
+                    "id": mid,
+                    "label": m.get("label", mid),
+                    "definition": m.get("description", ""),
+                    "formula": m.get("sql", ""),
+                    "base": m.get("base", ""),
+                    "filters": list(m.get("filters", [])),
+                    "format": m.get("format", "number"),
+                }
+            )
+        period = "all dates in the data"
+        if plan.time:
+            t = plan.time
+            if t.year_month_from or t.year_month_to:
+                period = f"{t.year_month_from or 'start'} to {t.year_month_to or 'end'}"
+            elif t.fiscal_year:
+                period = self.period_label(t.fiscal_year, t.fiscal_quarter).strip()
+            if t.label and t.label not in period:
+                period = f"{period} (“{t.label}”)"
+        if plan.compare:
+            period += (
+                "; compared with the same window one " + ("year" if plan.compare == "yoy" else "quarter") + " earlier"
+            )
+        return {
+            "metrics": metrics,
+            "period": period,
+            "grouping": [
+                self.dimensions.get(d, {}).get("label", d.replace("_", " "))
+                if isinstance(self.dimensions.get(d), dict)
+                else d
+                for d in plan.dimensions
+            ],
+            "filters": [
+                f"{f.dimension.replace('_', ' ')} {f.op} {f.value if isinstance(f.value, str) else ', '.join(f.value)}"
+                for f in plan.filters
+            ],
+            "top_n": plan.top_n,
+            "order": plan.order,
+            "calendar": "calendar periods" if self.calendar else "fiscal periods",
+            "as_of": self.as_of_default,
+        }
 
     # ----- field mapping ---------------------------------------------------------------------
     def resolve(self, question: str, as_of: date) -> Resolution:
@@ -351,7 +404,33 @@ class SemanticLayer:
         # only if no other metric is present.
         if "customer" in res.dimensions and "active_customers" in res.metrics and len(res.metrics) > 1:
             res.metrics.remove("active_customers")
+        res.residual = self._residual(consumed, res)
         return res
+
+    _GLUE = frozenset(
+        "what is are was were the a an of in by per for on to and or how much many show me give us list "
+        "top bottom best worst highest lowest largest smallest most least fewest biggest leading rate total "
+        "overall across all each every with our my your please do did does we i you want need see tell about "
+        "trend over time breakdown split compare comparison versus vs against from between as at which who "
+        "where when number count amount figure figures value values stats statistics data report chart "
+        "table please thanks hi hello".split()
+    )
+
+    def _residual(self, consumed: str, res: Resolution) -> list[str]:
+        """Words of the question that no metric, dimension, value, time or top-N phrase explained.
+        Empty means the semantic layer alone understood the question (the planner can skip the model)."""
+        text = consumed
+        for f in res.filters:
+            text = re.sub(_WORD.format(re.escape(str(f.value).lower())), " ", text)
+        text = re.sub(r"\b(top|bottom|lowest|worst|best|largest|smallest|highest)\s+\d{1,3}\b", " ", text)
+        text = re.sub(
+            r"\b(yoy|qoq|year[- ]over[- ]year|quarter[- ]over[- ]quarter|vs\.?|versus|compared (to|with)|against)\b",
+            " ",
+            text,
+        )
+        text = re.sub(r"\b(last|previous|prior|this|current)\s+(year|quarter|month)\b", " ", text)
+        words = [w for w in re.findall(r"[a-z][a-z0-9_%-]*", text) if w not in self._GLUE and len(w) > 1]
+        return words
 
     def _parse_time(self, q: str, as_of: date) -> TimeFilter | None:
         fy_now, fq_now = self.fiscal_of(as_of)

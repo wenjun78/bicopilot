@@ -15,6 +15,7 @@ import {
   type Role,
 } from "./api";
 import { DictionaryView } from "./components/DictionaryView";
+import { MethodPanel } from "./components/MethodPanel";
 import { ExportMenu } from "./components/ExportMenu";
 import { ResultView } from "./components/ResultView";
 import { SqlConsole } from "./components/SqlConsole";
@@ -91,6 +92,7 @@ export default function App() {
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [consoleSql, setConsoleSql] = useState("");
+  const [elapsed, setElapsed] = useState(0);
   const bottom = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const suggestions = demo?.suggestions ?? DEFAULT_SUGGESTIONS;
@@ -181,6 +183,14 @@ export default function App() {
   }, [turns, busy]);
 
   useEffect(() => writePref("bicopilot.role", role), [role]);
+
+  useEffect(() => {
+    if (!busy) return;
+    const started = Date.now();
+    setElapsed(0);
+    const id = setInterval(() => setElapsed(Math.round((Date.now() - started) / 1000)), 1000);
+    return () => clearInterval(id);
+  }, [busy]);
 
   async function addFiles(files: FileList | File[]) {
     const list = Array.from(files).slice(0, 4 - attachments.length);
@@ -490,6 +500,7 @@ export default function App() {
                     )}
                     {r?.status === "answered" && (
                       <>
+                        {r.method && <MethodPanel method={r.method} />}
                         <ResultView r={r} />
                         <div className="foot">
                           <ExportMenu columns={r.columns} rows={r.rows} title={r.question} sql={r.sql ?? ""} compact />
@@ -518,6 +529,7 @@ export default function App() {
                   <span><i />SQL agent</span>
                   <span><i />Analyst</span>
                   <span><i />Critic</span>
+                  <span className="elapsed">{elapsed > 0 ? `${elapsed} s` : ""}</span>
                 </div>
                 <div className="progress" />
               </div>
@@ -587,14 +599,19 @@ export default function App() {
                   </>
                 )}
               </span>
-              <span className="links">
-                <a className="textlink" href={LINKS.caseStudy}>Case study</a>
-                <a className="textlink" href={LINKS.source} target="_blank" rel="noopener noreferrer">Source</a>
-              </span>
             </div>
           </div>
         </main>
       )}
+
+      <footer className="site-foot">
+        <span>© {new Date().getFullYear()} wjun78</span>
+        <span className="links">
+          <a className="textlink" href={LINKS.caseStudy}>Case study</a>
+          <a className="textlink" href={LINKS.source} target="_blank" rel="noopener noreferrer">Source</a>
+          <a className="textlink" href="https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce" target="_blank" rel="noopener noreferrer">Data: Olist (CC BY-NC-SA 4.0)</a>
+        </span>
+      </footer>
     </div>
   );
 }

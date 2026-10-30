@@ -38,7 +38,7 @@ from .dictionary import build_dictionary, dictionary_chunks
 from .llm import FakeLLM, make_llm
 from .rerank import make_reranker
 from .retrieval import Retriever
-from .semantic import SemanticLayer
+from .semantic import Plan, SemanticLayer
 from .sqlguard import ALLOWED_TABLES, guard
 
 log = logging.getLogger("bicopilot")
@@ -137,6 +137,22 @@ class Copilot:
         cache_set(self.engine, key, json.dumps(dictionary, default=str))
         return dictionary
 
+    def _method(self, final: dict[str, Any]) -> dict[str, Any] | None:
+        """'How this was calculated': the analyst's sentence plus the semantic layer's own account of the plan."""
+        if final.get("status") != "answered" or not final.get("plan"):
+            return None
+        try:
+            plan = Plan.model_validate(final["plan"])
+        except Exception:
+            return None
+        detail = self.semantic.method_detail(plan)
+        sentence = (final.get("analysis") or {}).get("method") or ""
+        if not sentence and isinstance(self.llm, FakeLLM):
+            sentence = self.llm.method_sentence(plan)
+        detail["sentence"] = sentence
+        detail["sql"] = final.get("sql")
+        return detail
+
     def policy(self, role: str) -> Policy:
         role = role if role in ROLES else "analyst"
         return Policy(role=role, masked=self.masked_columns if role == "viewer" else set())
@@ -224,6 +240,7 @@ class Copilot:
             "row_count": final.get("row_count", 0),
             "truncated": final.get("truncated", False),
             "analysis": final.get("analysis"),
+            "method": self._method(final),
             "critic": final.get("critic"),
             "attempts": final.get("sql_attempts", []),
             "tool_steps": final.get("tool_steps", []),
@@ -237,6 +254,9 @@ class Copilot:
             "cached": False,
         }
         self._record(result, session_id)
+        if policy.role == "viewer":
+            # viewers get the answer, not the workings: no agent trace, tool observations or retrieval ranks
+            result = {**result, "trace": [], "tool_steps": [], "retrieval": None, "context_chunks": []}
         if (
             result["status"] == "answered" and not fallback_error and not attachment_text
         ):  # never cache a degraded answer
@@ -270,7 +290,6 @@ class Copilot:
     def explain_sql(self, sql: str, columns: list[str], rows: list[list[Any]], role: str = "analyst") -> dict[str, Any]:
         """Console 'Explain': the analyst agent interprets a result set the visitor produced by hand."""
         from .agents.analyst import build_analyst
-        from .semantic import Plan
 
         policy = self.policy(role)
         agent = build_analyst(self.runtime)

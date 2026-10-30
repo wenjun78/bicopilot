@@ -55,11 +55,21 @@ export function ResultView({ r }: { r: ChatResult }) {
   const yCols = ys.length ? ys : r.columns.filter((c) => c !== x && typeof data[0]?.[c] === "number");
   const canChart = chart && chart.type !== "table" && data.length > 0;
   const numeric = new Set(r.columns.filter((c) => typeof data[0]?.[c] === "number"));
+  const viewer = r.role === "viewer";
+  const unit = r.method?.metrics?.[0]?.format ?? "number";
+  const fmtUnit = (v: unknown): string => {
+    if (typeof v !== "number") return fmt(v);
+    if (unit === "percent") return `${v.toFixed(1)}%`;
+    if (unit === "currency") return `BRL ${fmt(v)}`;
+    return fmt(v);
+  };
+  const compactUnit = (v: number): string => (unit === "percent" ? `${v.toFixed(1)}%` : compact(v));
+  const tabs = (viewer ? ["chart", "table", "sql"] : ["chart", "table", "sql", "trace"]) as ("chart" | "table" | "sql" | "trace")[];
 
   return (
     <div className="result">
       <div className="tabs" role="tablist">
-        {(["chart", "table", "sql", "trace"] as const).map((t) => (
+        {tabs.map((t) => (
           <button key={t} role="tab" aria-selected={tab === t} className={tab === t ? "tab active" : "tab"} onClick={() => setTab(t)}>
             {t === "table" ? `Table (${r.row_count}${r.truncated ? "+" : ""})` : t === "sql" ? "SQL" : t[0].toUpperCase() + t.slice(1)}
           </button>
@@ -74,7 +84,7 @@ export function ResultView({ r }: { r: ChatResult }) {
             <div className="kpis">
               {yCols.map((c) => (
                 <div className="kpi" key={c}>
-                  <div className="kpi-value">{fmt(data[0][c])}</div>
+                  <div className="kpi-value">{yCols.length === 1 ? fmtUnit(data[0][c]) : fmt(data[0][c])}</div>
                   <div className="kpi-label">{label(c)}</div>
                 </div>
               ))}
@@ -85,13 +95,13 @@ export function ResultView({ r }: { r: ChatResult }) {
               <ResponsiveContainer width="100%" height={Math.min(440, 90 + data.length * (yCols.length > 1 ? 34 : 26))}>
                 <BarChart data={data} layout="vertical" margin={{ left: 4, right: 56, top: 4, bottom: 4 }} barCategoryGap={yCols.length > 1 ? 8 : 6} barGap={2}>
                   <CartesianGrid horizontal={false} stroke="var(--line)" />
-                  <XAxis type="number" tickFormatter={compact} tick={AXIS} axisLine={false} tickLine={false} />
+                  <XAxis type="number" tickFormatter={compactUnit} tick={AXIS} axisLine={false} tickLine={false} />
                   <YAxis type="category" dataKey={x} width={Math.min(170, 40 + Math.max(...data.map((d) => String(d[x]).length)) * 7)} tick={AXIS} axisLine={false} tickLine={false} />
                   <Tooltip content={<Tip />} cursor={{ fill: "var(--raised)" }} />
                   {yCols.length > 1 && <Legend formatter={(v) => <span style={{ color: "var(--ink-2)", fontSize: 12.5 }}>{label(String(v))}</span>} />}
                   {yCols.map((c, i) => (
                     <Bar key={c} dataKey={c} name={c} fill={SERIES[Math.min(i, SERIES.length - 1)]} radius={[0, 4, 4, 0]} barSize={yCols.length > 1 ? 10 : 14} isAnimationActive={false}>
-                      {yCols.length === 1 && data.length <= 12 && <LabelList dataKey={c} position="right" formatter={(v: number) => compact(v)} style={{ fill: "var(--ink-2)", fontSize: 12 }} />}
+                      {yCols.length === 1 && data.length <= 12 && <LabelList dataKey={c} position="right" formatter={(v: number) => compactUnit(v)} style={{ fill: "var(--ink-2)", fontSize: 12 }} />}
                     </Bar>
                   ))}
                 </BarChart>
@@ -174,7 +184,7 @@ export function ResultView({ r }: { r: ChatResult }) {
         </div>
       )}
 
-      {tab === "trace" && (
+      {tab === "trace" && !viewer && (
         <div className="panel trace-grid">
           <div className="trace-block">
             <strong>Agents</strong>

@@ -22,6 +22,7 @@ class BIState(TypedDict, total=False):
     as_of: str
     attachment_text: str
     policy_note: str
+    fast_path: bool  # the semantic layer fully explained the question: skip model calls for plan and SQL
     role: str
     # routing
     intent: str

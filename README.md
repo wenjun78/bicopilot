@@ -56,7 +56,7 @@ path, not measured LLM accuracy, and nothing here is a claim of business impact.
 | A2A | `a2a.py`, `agents/reporting_agent.py`, `weekly-report.yml` | Agent Card + JSON-RPC `message/send`; a second agent compiles a weekly briefing and commits it |
 | UI | `web/` | React + Vite + Recharts: Chat (answer, chart, table, SQL, trace, export, open-in-console, paste/drop attachments), SQL console (schema browser, history, explain, export), Data dictionary (search, profiles, masked flags), role switch, new chat |
 | Eval | `eval/` | 60 questions with hand-written gold SQL over the real data; execution accuracy by tag -> `eval/report.md` |
-| Tests | `tests/` | 61 tests: resolver, compiler, guard, tools, rerankers, Milvus store, cache, limits, fallback, console, masking, exports, attachments, admin analytics, graph, API, A2A. CI runs SQLite + Milvus Lite and Postgres + pgvector + Redis |
+| Tests | `tests/` | 67 tests: resolver, compiler, guard, tools, rerankers, Milvus store, cache, limits, fallback, console, masking, exports, attachments, admin analytics, graph, API, A2A. CI runs SQLite + Milvus Lite and Postgres + pgvector + Redis |
 
 ![SQL console with schema browser](docs/console.png)
 
@@ -133,6 +133,14 @@ critic's verdict.
 - **The golden record is the point.** The source's per-order customer IDs are exactly the master-data problem
   a BI team meets first; the loader resolves it once and the semantic layer says "customers means golden records",
   so every agent counts people, not orders.
+- **Confident resolution is the fast path.** When the semantic layer names the metric, nothing is ambiguous and no
+  word of the question is left unexplained, the plan and the SQL are deterministic and the model is called only
+  for the analysis and the critic: two model calls instead of six or seven, so a plain question answers in a few
+  seconds. A residual word ("excluding", "place"), an ambiguous phrase or a pasted file brings the planner and the
+  ReAct SQL agent back in. The trace says which path ran.
+- **Every answer says how it was calculated.** The analyst writes a one-line method; the semantic layer adds the
+  definition, the formula, the mandatory filters, the resolved period and the grouping, so a business reader can
+  audit the number without reading SQL. Viewers get the answer, the table and the SQL, not the agents' workings.
 - **Clarify, don't guess.** "delivery" maps to delivery days or on-time rate; "performance" to three metrics.
   The planner returns options, the UI renders chips, the follow-up is merged with the pending question.
 - **Relative time against an as-of date** (2018-08-31, the last complete month): "last quarter" is 2018-Q2, YoY
@@ -173,7 +181,7 @@ src/bicopilot/   config, db, semantic, dictionary, retrieval, rerank, tools, cac
 src/bicopilot/agents/  state, planner, sql_agent, analyst, graph (supervisor)
 agents/          reporting_agent.py (second agent, talks A2A)
 eval/            questions.jsonl, run.py, export_demo.py, report.md
-tests/           61 tests
+tests/           67 tests
 web/             React UI (Vite). web/dist is served by the API at /
 admin/           Authenticated analytics dashboard UI (HTML, CSS, JavaScript)
 ```

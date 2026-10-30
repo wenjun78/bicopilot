@@ -61,6 +61,7 @@ Write a short, specific answer for a business reader:
 - insights: up to 3 bullet-sized observations grounded ONLY in the rows (largest/smallest, concentration, trend direction). No speculation about causes.
 - chart: kpi for a single number; bar for a ranking/breakdown; line for a time series; table otherwise. x = the dimension column, y = metric column(s).
 - caveats: note truncation, empty results, or any assumption the plan made (e.g. "last quarter" resolved to 2018-Q2; revenue covers delivered orders only).
+- method: one sentence, from the SQL, saying how the figure was computed for a business reader: the formula in words, the filters applied, the period and the grain (e.g. "Delivered orders flagged late divided by all delivered orders with a delivery date, as a percentage, for purchases in 2018, grouped by the buyer's region."). No numbers from the rows.
 Never invent numbers that are not in the rows."""
 
 CRITIC_SYSTEM = """You are the CRITIC agent (Reflection pattern). Check the draft answer against the question, the plan, the SQL and the rows.

@@ -158,9 +158,10 @@ so later cold starts take seconds. A warehouse built for an older schema is dete
 the blueprint: 6 questions/minute and 25/day per visitor (hashed IP), 300 model-backed answers/day site-wide,
 `/runs` behind `ADMIN_TOKEN`.
 
-**UI on GitHub Pages**: `.github/workflows/pages.yml` builds `web/` and publishes to `https://<user>.github.io/bicopilot/`;
-the same build is copied into the portfolio site. Without a reachable API the page serves the pre-computed bundle
-(chat only); the SQL console, dictionary and attachments need the live API.
+**Static copy in the portfolio**: the same UI build (`cd web && VITE_BASE=/portfolio/bi-copilot/ VITE_API_URL=https://bicopilot.onrender.com npm run build`)
+is copied into the portfolio site at `wenjun78.github.io/portfolio/bi-copilot/`. It talks to the Render API; without a
+reachable API it serves the pre-computed bundle (chat only), while the SQL console, dictionary and attachments need
+the live API.
 
 ## Repository map
 

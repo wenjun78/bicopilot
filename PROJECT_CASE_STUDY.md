@@ -114,7 +114,7 @@ The orchestration is in [``src/bicopilot/agents/graph.py``](src/bicopilot/agents
 
 - **Local/zero-infrastructure path:** SQLite, in-memory vectors, deterministic fake LLM, and in-process cache; suitable for tests and reproducible demonstrations.
 - **Optional model/database path:** configurable OpenAI-compatible model, embeddings, PostgreSQL with pgvector, and Redis. Configuration supports these; it does not prove they are enabled in a particular live service.
-- **Web deployment:** Docker builds the React frontend and Python API into one image. On Render the frontend can use the same-origin API. GitHub Pages is a separate static frontend deployment that needs a configured API base URL to communicate with Render.
+- **Web deployment:** Docker builds the React frontend and Python API into one image. On Render the frontend can use the same-origin API. The portfolio site hosts a static copy of the same frontend, built with the Render API as its base URL.
 - **A2A automation:** a separate reporting client uses the Agent Card and JSON-RPC message/send surface; a scheduled GitHub Actions workflow can produce Markdown reports.
 
 ## 5. End-to-end implementation walkthrough

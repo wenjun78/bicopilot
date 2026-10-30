@@ -33,7 +33,7 @@ from .agents.state import Runtime
 from .attachments import context_block
 from .cache import cache_key, make_cache
 from .config import Settings
-from .db import init_schema, load_csvs, make_engine, max_order_date, run_query, warehouse_ready
+from .db import ensure_warehouse, make_engine, max_order_date, run_query
 from .dictionary import build_dictionary, dictionary_chunks
 from .llm import FakeLLM, make_llm
 from .rerank import make_reranker
@@ -85,9 +85,9 @@ class Copilot:
         self.settings = settings or Settings()
         self.engine = make_engine(self.settings)
         if bootstrap:
-            init_schema(self.engine)
-            if not warehouse_ready(self.engine):
-                load_csvs(self.engine)
+            loaded = ensure_warehouse(self.engine)
+            if loaded:
+                log.info("warehouse loaded: %s", ", ".join(f"{k}={v}" for k, v in loaded.items()))
         metadata.create_all(self.engine)
         _add_missing_columns(self.engine)
         self.semantic = SemanticLayer.load(self.settings.semantic_dir)

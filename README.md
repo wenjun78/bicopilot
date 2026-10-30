@@ -56,7 +56,7 @@ path, not measured LLM accuracy, and nothing here is a claim of business impact.
 | A2A | `a2a.py`, `agents/reporting_agent.py`, `weekly-report.yml` | Agent Card + JSON-RPC `message/send`; a second agent compiles a weekly briefing and commits it |
 | UI | `web/` | React + Vite + Recharts: Chat (answer, chart, table, SQL, trace, export, open-in-console, paste/drop attachments), SQL console (schema browser, history, explain, export), Data dictionary (search, profiles, masked flags), role switch, new chat |
 | Eval | `eval/` | 60 questions with hand-written gold SQL over the real data; execution accuracy by tag -> `eval/report.md` |
-| Tests | `tests/` | 56 tests: resolver, compiler, guard, tools, rerankers, Milvus store, cache, limits, fallback, console, masking, exports, attachments, admin analytics, graph, API, A2A. CI runs SQLite + Milvus Lite and Postgres + pgvector + Redis |
+| Tests | `tests/` | 58 tests: resolver, compiler, guard, tools, rerankers, Milvus store, cache, limits, fallback, console, masking, exports, attachments, admin analytics, graph, API, A2A. CI runs SQLite + Milvus Lite and Postgres + pgvector + Redis |
 
 ![SQL console with schema browser](docs/console.png)
 
@@ -169,7 +169,7 @@ src/bicopilot/   config, db, semantic, dictionary, retrieval, rerank, tools, cac
 src/bicopilot/agents/  state, planner, sql_agent, analyst, graph (supervisor)
 agents/          reporting_agent.py (second agent, talks A2A)
 eval/            questions.jsonl, run.py, export_demo.py, report.md
-tests/           56 tests
+tests/           58 tests
 web/             React UI (Vite). web/dist is served by the API at /
 admin/           Authenticated analytics dashboard UI (HTML, CSS, JavaScript)
 ```

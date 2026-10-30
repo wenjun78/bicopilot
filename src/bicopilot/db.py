@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import Engine, create_engine, event, text
+from sqlalchemy import Engine, column, create_engine, event, insert, table, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from .config import ROOT, Settings
@@ -32,6 +32,12 @@ TABLE_ORDER = [
     "fact_payments",
     "fact_reviews",
 ]
+# Bumped whenever schema.sql changes shape. A deployed database built for an older shape (the synthetic
+# warehouse this project started with, for example) is dropped and rebuilt from the CSVs on start; the
+# run/visit logs (copilot_*) are never touched.
+WAREHOUSE_VERSION = "olist-1"
+LEGACY_TABLES = ["dim_sales_rep", "fact_targets"]
+INSERT_BATCH = 5000
 
 
 class QueryError(Exception):
@@ -72,24 +78,69 @@ def init_schema(engine: Engine) -> None:
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
+        conn.execute(
+            text("CREATE TABLE IF NOT EXISTS warehouse_meta (key VARCHAR(64) PRIMARY KEY, value VARCHAR(255))")
+        )
+
+
+def warehouse_version(engine: Engine) -> str | None:
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text("SELECT value FROM warehouse_meta WHERE key = 'schema_version'")
+            ).scalar_one_or_none()
+    except SQLAlchemyError:
+        return None
+
+
+def drop_warehouse(engine: Engine) -> None:
+    """Drop the warehouse tables (current and legacy names) but never the copilot_* logs."""
+    cascade = " CASCADE" if engine.dialect.name == "postgresql" else ""
+    with engine.begin() as conn:
+        for t in reversed(TABLE_ORDER + LEGACY_TABLES + ["warehouse_meta"]):
+            conn.execute(text(f"DROP TABLE IF EXISTS {t}{cascade}"))
+
+
+def ensure_warehouse(engine: Engine, csv_dir: Path = CSV_DIR) -> dict[str, int] | None:
+    """Create or upgrade the warehouse: schema, data, version marker.
+
+    - fresh database: create tables, load CSVs, stamp the version
+    - same version and data present: nothing
+    - different version (tables from an older schema): drop warehouse tables, recreate, reload
+    Returns the row counts when a load happened, else None.
+    """
+    if warehouse_version(engine) != WAREHOUSE_VERSION:
+        drop_warehouse(engine)
+        init_schema(engine)
+    elif warehouse_ready(engine):
+        return None
+    counts = load_csvs(engine, csv_dir)
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM warehouse_meta WHERE key = 'schema_version'"))
+        conn.execute(
+            text("INSERT INTO warehouse_meta (key, value) VALUES ('schema_version', :v)"), {"v": WAREHOUSE_VERSION}
+        )
+    return counts
 
 
 def load_csvs(engine: Engine, csv_dir: Path = CSV_DIR, replace: bool = True) -> dict[str, int]:
     counts = {}
     with engine.begin() as conn:
-        for table in TABLE_ORDER:
-            path = csv_dir / f"{table}.csv"
+        for name in TABLE_ORDER:
+            path = csv_dir / f"{name}.csv"
             if not path.exists():
                 raise FileNotFoundError(f"{path} missing - run `python data/build_olist.py` first")
             with path.open(encoding="utf-8") as f:
                 rows = [{k: _coerce(v) for k, v in r.items()} for r in csv.DictReader(f)]
             if replace:
-                conn.execute(text(f"DELETE FROM {table}"))
+                conn.execute(text(f"DELETE FROM {name}"))
             if rows:
-                cols = list(rows[0].keys())
-                placeholders = ", ".join(f":{c}" for c in cols)
-                conn.execute(text(f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({placeholders})"), rows)
-            counts[table] = len(rows)
+                # A Core insert (not text()) lets SQLAlchemy use multi-row VALUES on PostgreSQL, which turns a
+                # 450k-row first load over the network from many minutes into tens of seconds.
+                tbl = table(name, *[column(c) for c in rows[0].keys()])
+                for i in range(0, len(rows), INSERT_BATCH):
+                    conn.execute(insert(tbl), rows[i : i + INSERT_BATCH])
+            counts[name] = len(rows)
     return counts
 
 

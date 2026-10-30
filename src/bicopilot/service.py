@@ -33,7 +33,7 @@ from .agents.state import Runtime
 from .attachments import context_block
 from .cache import cache_key, make_cache
 from .config import Settings
-from .db import ensure_warehouse, make_engine, max_order_date, run_query
+from .db import WAREHOUSE_VERSION, cache_get, cache_set, ensure_warehouse, make_engine, max_order_date, run_query
 from .dictionary import build_dictionary, dictionary_chunks
 from .llm import FakeLLM, make_llm
 from .rerank import make_reranker
@@ -91,7 +91,10 @@ class Copilot:
         metadata.create_all(self.engine)
         _add_missing_columns(self.engine)
         self.semantic = SemanticLayer.load(self.settings.semantic_dir)
-        self.dictionary = build_dictionary(self.engine, self.semantic, ALLOWED_TABLES)
+        self.semantic_version = hashlib.sha256((self.settings.semantic_dir / "metrics.yaml").read_bytes()).hexdigest()[
+            :12
+        ]
+        self.dictionary = self._load_dictionary()
         self.masked_columns = masked_from_dictionary(self.dictionary)
         self.retriever = Retriever(
             self.semantic, self.settings, self.engine, extra_chunks=dictionary_chunks(self.dictionary)
@@ -118,9 +121,21 @@ class Copilot:
             self.fallback_graph = build_graph(fallback_rt)
         self.as_of = self.settings.as_of_date or self.semantic.as_of_default or max_order_date(self.engine)
         self.cache = make_cache(self.settings.cache_url, self.settings.cache_ttl_s)
-        self.semantic_version = hashlib.sha256((self.settings.semantic_dir / "metrics.yaml").read_bytes()).hexdigest()[
-            :12
-        ]
+
+    def _load_dictionary(self) -> dict[str, Any]:
+        """Column profiles cost a few hundred queries; on a remote warehouse that is a minute of startup,
+        so the result is cached in the database, keyed by warehouse version + dictionary/semantic text."""
+        key_src = (self.settings.semantic_dir / "dictionary.yaml").read_bytes() + self.semantic_version.encode()
+        key = f"dictionary:{WAREHOUSE_VERSION}:{hashlib.sha256(key_src).hexdigest()[:16]}"
+        cached = cache_get(self.engine, key)
+        if cached:
+            try:
+                return json.loads(cached)
+            except ValueError:
+                pass
+        dictionary = build_dictionary(self.engine, self.semantic, ALLOWED_TABLES)
+        cache_set(self.engine, key, json.dumps(dictionary, default=str))
+        return dictionary
 
     def policy(self, role: str) -> Policy:
         role = role if role in ROLES else "analyst"

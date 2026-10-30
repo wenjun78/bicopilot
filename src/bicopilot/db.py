@@ -69,6 +69,10 @@ def make_engine(settings: Settings) -> Engine:
             dbapi_conn.execute("PRAGMA journal_mode=WAL")
 
         return engine
+    if url.startswith("postgres://"):  # Heroku/Neon style scheme
+        url = "postgresql://" + url[len("postgres://") :]
+    if url.startswith("postgresql://"):  # the only installed driver is psycopg 3
+        url = "postgresql+psycopg://" + url[len("postgresql://") :]
     return create_engine(url, pool_pre_ping=True)
 
 
@@ -81,6 +85,7 @@ def init_schema(engine: Engine) -> None:
         conn.execute(
             text("CREATE TABLE IF NOT EXISTS warehouse_meta (key VARCHAR(64) PRIMARY KEY, value VARCHAR(255))")
         )
+        conn.execute(text("CREATE TABLE IF NOT EXISTS warehouse_cache (key VARCHAR(128) PRIMARY KEY, value TEXT)"))
 
 
 def warehouse_version(engine: Engine) -> str | None:
@@ -97,7 +102,7 @@ def drop_warehouse(engine: Engine) -> None:
     """Drop the warehouse tables (current and legacy names) but never the copilot_* logs."""
     cascade = " CASCADE" if engine.dialect.name == "postgresql" else ""
     with engine.begin() as conn:
-        for t in reversed(TABLE_ORDER + LEGACY_TABLES + ["warehouse_meta"]):
+        for t in reversed(TABLE_ORDER + LEGACY_TABLES + ["warehouse_meta", "warehouse_cache"]):
             conn.execute(text(f"DROP TABLE IF EXISTS {t}{cascade}"))
 
 
@@ -124,24 +129,69 @@ def ensure_warehouse(engine: Engine, csv_dir: Path = CSV_DIR) -> dict[str, int] 
 
 
 def load_csvs(engine: Engine, csv_dir: Path = CSV_DIR, replace: bool = True) -> dict[str, int]:
+    """Load the warehouse CSVs. PostgreSQL gets COPY (450k rows in seconds, even to a remote Neon);
+    SQLite gets batched multi-row inserts."""
     counts = {}
     with engine.begin() as conn:
         for name in TABLE_ORDER:
             path = csv_dir / f"{name}.csv"
             if not path.exists():
                 raise FileNotFoundError(f"{path} missing - run `python data/build_olist.py` first")
-            with path.open(encoding="utf-8") as f:
-                rows = [{k: _coerce(v) for k, v in r.items()} for r in csv.DictReader(f)]
             if replace:
                 conn.execute(text(f"DELETE FROM {name}"))
-            if rows:
-                # A Core insert (not text()) lets SQLAlchemy use multi-row VALUES on PostgreSQL, which turns a
-                # 450k-row first load over the network from many minutes into tens of seconds.
-                tbl = table(name, *[column(c) for c in rows[0].keys()])
-                for i in range(0, len(rows), INSERT_BATCH):
-                    conn.execute(insert(tbl), rows[i : i + INSERT_BATCH])
-            counts[name] = len(rows)
+            if engine.dialect.name == "postgresql":
+                counts[name] = _copy_postgres(conn, name, path)
+            else:
+                counts[name] = _insert_rows(conn, name, path)
     return counts
+
+
+def _copy_postgres(conn, name: str, path: Path) -> int:
+    with path.open(encoding="utf-8") as f:
+        header = f.readline().strip()
+    sql = f"COPY {name} ({header}) FROM STDIN WITH (FORMAT csv, HEADER true)"
+    raw = conn.connection.dbapi_connection
+    with raw.cursor() as cur, path.open("rb") as f:
+        if hasattr(cur, "copy"):  # psycopg 3
+            with cur.copy(sql) as copy:
+                while chunk := f.read(1 << 20):
+                    copy.write(chunk)
+        else:  # psycopg2
+            cur.copy_expert(sql, f)
+        n = cur.rowcount
+    if n is None or n < 0:
+        with path.open(encoding="utf-8") as f:
+            n = sum(1 for _ in f) - 1
+    return int(n)
+
+
+def _insert_rows(conn, name: str, path: Path) -> int:
+    with path.open(encoding="utf-8") as f:
+        rows = [{k: _coerce(v) for k, v in r.items()} for r in csv.DictReader(f)]
+    if rows:
+        tbl = table(name, *[column(c) for c in rows[0].keys()])
+        for i in range(0, len(rows), INSERT_BATCH):
+            conn.execute(insert(tbl), rows[i : i + INSERT_BATCH])
+    return len(rows)
+
+
+def cache_get(engine: Engine, key: str) -> str | None:
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text("SELECT value FROM warehouse_cache WHERE key = :k"), {"k": key}
+            ).scalar_one_or_none()
+    except SQLAlchemyError:
+        return None
+
+
+def cache_set(engine: Engine, key: str, value: str) -> None:
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM warehouse_cache WHERE key = :k"), {"k": key})
+            conn.execute(text("INSERT INTO warehouse_cache (key, value) VALUES (:k, :v)"), {"k": key, "v": value})
+    except SQLAlchemyError:  # pragma: no cover - cache is best effort
+        pass
 
 
 def warehouse_ready(engine: Engine) -> bool:

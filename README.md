@@ -151,7 +151,10 @@ critic's verdict.
 (everything else is pre-filled). The image builds the Olist warehouse from the committed zip at build time.
 `python scripts/smoke_live.py https://<service>.onrender.com` checks health, three questions, a clarification
 round trip and the agent card. Free-tier services sleep after 15 idle minutes; the UI polls `/healthz` for up to
-90 s while the server wakes and answers from the pre-computed bundle meanwhile. Public-exposure controls set by
+90 s while the server wakes and answers from the pre-computed bundle meanwhile. The API binds its port at once and
+builds the copilot in the background (`/healthz` answers 503 `starting` until then); the first start on a fresh
+database loads the warehouse with `COPY`, profiles the columns and embeds the chunks, and caches the last two,
+so later cold starts take seconds. A warehouse built for an older schema is detected by version and rebuilt. Public-exposure controls set by
 the blueprint: 6 questions/minute and 25/day per visitor (hashed IP), 300 model-backed answers/day site-wide,
 `/runs` behind `ADMIN_TOKEN`.
 

@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -78,9 +80,45 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.copilot = copilot or Copilot(settings)
-        app.state.analytics = SiteAnalytics(app.state.copilot.engine, settings.secret_salt, runs_table)
+        # Bind the port first, build the copilot in the background: the first start on a remote warehouse
+        # loads the data, profiles it and embeds the chunks, and a platform's port scan must not time out
+        # meanwhile. Until ready, /healthz answers 503 and the data endpoints say "starting".
+        app.state.copilot = copilot
+        app.state.analytics = None
+        app.state.boot_error = None
+        app.state.boot_started = time.time()
+
+        def attach(c: Copilot) -> None:
+            app.state.analytics = SiteAnalytics(c.engine, settings.secret_salt, runs_table)
+            app.state.copilot = c
+            log.info("copilot ready in %.1fs", time.time() - app.state.boot_started)
+
+        if copilot is not None:
+            attach(copilot)
+        else:
+
+            def boot() -> None:
+                try:
+                    attach(Copilot(settings))
+                except Exception as exc:  # pragma: no cover - surfaced through /healthz
+                    log.exception("startup failed")
+                    app.state.boot_error = f"{type(exc).__name__}: {exc}"
+
+            threading.Thread(target=boot, name="bootstrap", daemon=True).start()
         yield
+
+    def copilot_of(request: Request) -> Copilot:
+        c = request.app.state.copilot
+        if c is None:
+            err = request.app.state.boot_error
+            raise HTTPException(
+                503,
+                f"startup failed: {err}"
+                if err
+                else "the copilot is starting (loading the warehouse); retry in a few seconds",
+                headers={"Retry-After": "5"},
+            )
+        return c
 
     app = FastAPI(title="bi-copilot", version="0.1.0", lifespan=lifespan)
     origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
@@ -94,7 +132,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         verdict = limiter.check(client_ip(request, settings.trusted_proxy_hops))
         if not verdict.allowed:
             return verdict
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         if settings.global_daily_limit > 0 and c.model_answers_today() >= settings.global_daily_limit:
             return Verdict(
                 False, 3600, "site_limit", "The copilot has reached its daily limit. Please come back tomorrow."
@@ -133,6 +171,8 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         if origin and origin != expected and origin not in origins:
             raise HTTPException(403, "origin not allowed")
         try:
+            if request.app.state.analytics is None:
+                return Response(status_code=204)
             request.app.state.analytics.record_visit(
                 data.visitor_id,
                 data.session_id,
@@ -148,11 +188,21 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         require_admin(request)
         if days not in (7, 30, 90):
             raise HTTPException(422, "days must be 7, 30, or 90")
+        copilot_of(request)  # 503 while starting
         return request.app.state.analytics.summary(days)
 
     @app.get("/healthz")
-    def healthz(request: Request) -> dict[str, Any]:
-        c: Copilot = request.app.state.copilot
+    def healthz(request: Request):
+        if request.app.state.copilot is None:
+            err = request.app.state.boot_error
+            body = {
+                "ok": False,
+                "status": "failed" if err else "starting",
+                "error": err,
+                "elapsed_s": round(time.time() - request.app.state.boot_started, 1),
+            }
+            return JSONResponse(body, status_code=503, headers={"Retry-After": "5"})
+        c = request.app.state.copilot
         return {
             "ok": True,
             "as_of": c.as_of,
@@ -165,7 +215,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @app.post("/chat")
     def chat(req: ChatRequest, request: Request):
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         verdict = admit(request)
         if not verdict.allowed:
             return refuse(verdict)
@@ -189,7 +239,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
     # ----- SQL console, dictionary, exports, attachments ----------------------------------------
     @app.post("/sql")
     def sql(req: SqlRequest, request: Request):
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         verdict = admit(request)
         if not verdict.allowed:
             return refuse(verdict)
@@ -202,7 +252,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @app.post("/sql/explain")
     def sql_explain(req: ExplainRequest, request: Request):
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         verdict = admit(request)
         if not verdict.allowed:
             return refuse(verdict)
@@ -210,7 +260,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @app.get("/dictionary")
     def dictionary(request: Request, role: str = "analyst") -> dict[str, Any]:
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         d = c.dictionary
         if role == "viewer":  # the viewer sees that a column exists and is masked, not its samples
             d = {
@@ -244,7 +294,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
             fmt,
             title=req.title,
             sql=req.sql,
-            meta={"source": "bi-copilot", "as_of": request.app.state.copilot.as_of},
+            meta={"source": "bi-copilot", "as_of": copilot_of(request).as_of},
         )
         name = (re.sub(r"[^a-z0-9]+", "-", req.title.lower()).strip("-") or "result")[:60]
         return Response(
@@ -269,7 +319,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @app.post("/attachments")
     async def attachments(request: Request, file: UploadFile = File(...)):
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         verdict = admit(request)
         if not verdict.allowed:
             return refuse(verdict)
@@ -282,7 +332,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @app.get("/catalog")
     def catalog(request: Request) -> dict[str, Any]:
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         return {
             "metrics": [
                 {
@@ -305,13 +355,13 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
     @app.get("/runs")
     def runs(request: Request, limit: int = 50) -> list[dict[str, Any]]:
         require_admin(request)
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         return [{k: v for k, v in r.items() if k not in ("trace", "plan")} for r in c.recent_runs(min(limit, 200))]
 
     @app.get("/runs/{run_id}")
     def run(run_id: str, request: Request) -> dict[str, Any]:
         require_admin(request)
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         row = c.run(run_id)
         if not row:
             raise HTTPException(404, "run not found")
@@ -324,7 +374,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
 
     @app.post("/a2a")
     async def a2a(request: Request) -> JSONResponse:
-        c: Copilot = request.app.state.copilot
+        c = copilot_of(request)
         verdict = admit(request)
         if not verdict.allowed:
             return JSONResponse(

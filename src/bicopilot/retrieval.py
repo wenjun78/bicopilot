@@ -129,22 +129,44 @@ class PgVectorStore:
                     f"embedding vector({dim}))"
                 )
             )
+            conn.execute(text(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS hash TEXT"))
+
+    def existing_hashes(self) -> dict[str, str]:
+        """id -> content hash of what is already embedded, so an unchanged chunk is not re-embedded on restart."""
+        with self.engine.connect() as conn:
+            rows = conn.execute(text(f"SELECT id, hash FROM {self.table}")).all()
+        return {r[0]: r[1] or "" for r in rows}
 
     def upsert(
-        self, ids: list[str], vectors: np.ndarray, titles: list[str] | None = None, bodies: list[str] | None = None
+        self,
+        ids: list[str],
+        vectors: np.ndarray,
+        titles: list[str] | None = None,
+        bodies: list[str] | None = None,
+        hashes: list[str] | None = None,
     ) -> None:
         titles = titles or [""] * len(ids)
         bodies = bodies or [""] * len(ids)
+        hashes = hashes or [""] * len(ids)
+        if not ids:
+            return
         with self.engine.begin() as conn:
-            for i, cid in enumerate(ids):
-                conn.execute(
-                    text(
-                        f"INSERT INTO {self.table} (id, title, body, embedding) VALUES (:id, :t, :b, CAST(:e AS vector)) "
-                        "ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body, "
-                        "embedding = EXCLUDED.embedding"
-                    ),
-                    {"id": cid, "t": titles[i], "b": bodies[i], "e": str(vectors[i].tolist())},
-                )
+            conn.execute(
+                text(
+                    f"INSERT INTO {self.table} (id, title, body, embedding, hash) "
+                    "VALUES (:id, :t, :b, CAST(:e AS vector), :h) "
+                    "ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, body = EXCLUDED.body, "
+                    "embedding = EXCLUDED.embedding, hash = EXCLUDED.hash"
+                ),
+                [
+                    {"id": cid, "t": titles[i], "b": bodies[i], "e": str(vectors[i].tolist()), "h": hashes[i]}
+                    for i, cid in enumerate(ids)
+                ],
+            )
+
+    def delete(self, ids: list[str]) -> None:
+        with self.engine.begin() as conn:
+            conn.execute(text(f"DELETE FROM {self.table} WHERE id = ANY(:ids)"), {"ids": list(ids)})
 
     def search(self, query: np.ndarray, k: int) -> list[tuple[str, float]]:
         with self.engine.connect() as conn:
@@ -263,12 +285,28 @@ class Retriever:
         else:
             self.store = MemoryVectorStore()
         self.reranker = reranker or Reranker()
-        vectors = self.embedder.embed([c.title + "\n" + c.text for c in self.chunks])
+        texts = [c.title + "\n" + c.text for c in self.chunks]
         ids = [c.id for c in self.chunks]
         if isinstance(self.store, PgVectorStore):
-            self.store.upsert(ids, vectors, [c.title for c in self.chunks], [c.text for c in self.chunks])
+            # Persistent store: embed only chunks whose text changed since the last start. On a warm restart
+            # this is zero embedding calls and zero writes, which keeps a free-tier cold start short.
+            hashes = [hashlib.sha1(t.encode()).hexdigest() for t in texts]
+            known = self.store.existing_hashes()
+            todo = [i for i, cid in enumerate(ids) if known.get(cid) != hashes[i]]
+            stale = [cid for cid in known if cid not in set(ids)]
+            if todo:
+                vectors = self.embedder.embed([texts[i] for i in todo])
+                self.store.upsert(
+                    [ids[i] for i in todo],
+                    vectors,
+                    [self.chunks[i].title for i in todo],
+                    [self.chunks[i].text for i in todo],
+                    [hashes[i] for i in todo],
+                )
+            if stale:
+                self.store.delete(stale)
         else:
-            self.store.upsert(ids, vectors)
+            self.store.upsert(ids, self.embedder.embed(texts))
 
     @property
     def backend(self) -> str:

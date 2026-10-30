@@ -50,3 +50,37 @@ def test_upgrade_from_legacy_schema_keeps_logs(tmp_path):
         assert "dim_sales_rep" not in tables and "fact_targets" not in tables
         assert conn.execute(text("SELECT question FROM copilot_runs")).scalar_one() == "revenue by region FY2026"
     assert warehouse_version(eng) == WAREHOUSE_VERSION
+
+
+def test_api_starts_in_background_and_reports_readiness(tmp_path):
+    """Without an injected copilot the app binds first and builds the copilot in a thread: /healthz says
+    'starting' (503) until the warehouse is loaded, then 200; data endpoints answer 503 meanwhile."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from bicopilot.api import create_app
+    from bicopilot.config import Settings
+
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'bg.db'}",
+        llm_provider="fake",
+        embedding_provider="hash",
+        cache_url="memory",
+        as_of_date="2018-08-31",
+    )
+    with TestClient(create_app(settings)) as client:
+        first = client.get("/healthz")
+        seen_starting = first.status_code == 503
+        if seen_starting:
+            assert first.json()["status"] == "starting" and first.headers.get("retry-after") == "5"
+            r = client.post("/chat", json={"question": "revenue by state 2017", "session_id": "bg"})
+            assert r.status_code in (503, 200)
+        deadline = time.time() + 120
+        while client.get("/healthz").status_code != 200:
+            assert time.time() < deadline, "copilot did not become ready"
+            time.sleep(0.5)
+        health = client.get("/healthz").json()
+        assert health["ok"] is True and health["as_of"] == "2018-08-31"
+        r = client.post("/chat", json={"question": "revenue by state 2017", "session_id": "bg"}).json()
+        assert r["status"] == "answered" and r["row_count"] > 0

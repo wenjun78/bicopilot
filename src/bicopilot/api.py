@@ -13,11 +13,12 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .analytics import SiteAnalytics
 from .a2a import agent_card, extract_text, jsonrpc_error, task_from_result
+from .analytics import SiteAnalytics
 from .config import ROOT, Settings
 from .limits import Verdict, VisitorLimiter, bearer_ok, client_ip
-from .service import Copilot, runs as runs_table
+from .service import Copilot
+from .service import runs as runs_table
 
 log = logging.getLogger("bicopilot")
 WEB_DIST = ROOT / "web" / "dist"

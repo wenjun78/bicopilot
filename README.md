@@ -139,8 +139,8 @@ critic's verdict.
   so every agent counts people, not orders.
 - **Confident resolution is the fast path.** When the semantic layer names the metric, nothing is ambiguous and no
   word of the question is left unexplained, the plan and the SQL are deterministic and the model is called only
-  for the analysis and the critic: two model calls instead of six or seven, so a plain question answers in a few
-  seconds. A residual word ("excluding", "place"), an ambiguous phrase or a pasted file brings the planner and the
+  for the analysis and the critic: two model calls instead of six or seven, which reduces sequential model calls. The latest cited live trace was 14.3 s before the router and reranker were removed;
+  the post-change latency has not yet been re-measured. A residual word ("excluding", "place"), an ambiguous phrase or a pasted file brings the planner and the
   ReAct SQL agent back in. The trace says which path ran.
 - **Every answer says how it was calculated.** The analyst writes a one-line method; the semantic layer adds the
   definition, the formula, the mandatory filters, the resolved period and the grouping, so a business reader can
@@ -154,7 +154,7 @@ critic's verdict.
   rows are post-filtered after, and the prompts tell the agents not to describe them. The console and the chat
   share all three.
 - **The deterministic path is the test oracle.** 60 questions have hand-written gold SQL; the eval compares
-  *result sets*. The compiler scores 100 %, which is the floor the model path must meet.
+  *result sets*. The repository reports 100% deterministic execution accuracy on its 50 gold-SQL cases; real-model accuracy needs its own evaluation.
 - **A2A as a first-class surface.** `reporting_agent.py` has no database access; it only has the Agent Card.
 
 ## Deploy

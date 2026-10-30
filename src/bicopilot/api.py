@@ -9,17 +9,26 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from .analytics import SiteAnalytics
 from .a2a import agent_card, extract_text, jsonrpc_error, task_from_result
 from .config import ROOT, Settings
 from .limits import Verdict, VisitorLimiter, bearer_ok, client_ip
-from .service import Copilot
+from .service import Copilot, runs as runs_table
 
 log = logging.getLogger("bicopilot")
 WEB_DIST = ROOT / "web" / "dist"
+ADMIN_HTML = ROOT / "admin" / "index.html"
+
+
+class VisitRequest(BaseModel):
+    visitor_id: str = Field(min_length=12, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
+    session_id: str = Field(min_length=4, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    path: str = Field(default="/", max_length=160)
+    referrer: str = Field(default="direct", max_length=200)
 
 
 class ChatRequest(BaseModel):
@@ -35,6 +44,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.copilot = copilot or Copilot(settings)
+        app.state.analytics = SiteAnalytics(app.state.copilot.engine, settings.secret_salt, runs_table)
         yield
 
     app = FastAPI(title="bi-copilot", version="0.1.0", lifespan=lifespan)
@@ -63,8 +73,39 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         return JSONResponse(body, status_code=429, headers={"Retry-After": str(verdict.retry_after)})
 
     def require_admin(request: Request) -> None:
-        if not bearer_ok(request, settings.admin_token):
+        if not settings.admin_token or not bearer_ok(request, settings.admin_token):
             raise HTTPException(401, "admin token required")
+
+
+    @app.get("/admin", include_in_schema=False)
+    def admin_page() -> FileResponse:
+        if not settings.admin_token:
+            raise HTTPException(503, "ADMIN_TOKEN must be configured to enable the dashboard")
+        return FileResponse(ADMIN_HTML, headers={"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow", "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"})
+
+    @app.post("/analytics/visit", status_code=204)
+    def record_visit(data: VisitRequest, request: Request) -> Response:
+        # A visit is a public page load, not a confirmed distinct human.
+        # Accept same-site requests only; cross-site visitor beacons cannot read responses.
+        origin = request.headers.get("origin", "")
+        expected = str(request.base_url).rstrip("/")
+        if origin and origin != expected and origin not in origins:
+            raise HTTPException(403, "origin not allowed")
+        try:
+            request.app.state.analytics.record_visit(
+                data.visitor_id, data.session_id,
+                data.path, data.referrer,
+            )
+        except Exception:
+            log.exception("failed to record visit")
+        return Response(status_code=204)
+
+    @app.get("/admin/api/overview")
+    def admin_overview(request: Request, days: int = 30):
+        require_admin(request)
+        if days not in (7, 30, 90):
+            raise HTTPException(422, "days must be 7, 30, or 90")
+        return request.app.state.analytics.summary(days)
 
     @app.get("/healthz")
     def healthz(request: Request) -> dict[str, Any]:

@@ -13,7 +13,9 @@ PDFs and screenshots as context, and role-based masking.
    -> critic   : pass
 ```
 
-![Chat: answer, chart, export, open in console](docs/chat.png)
+![Start screen: what the data is, starter questions](docs/home.png)
+
+![An answer: statement, how it was calculated, chart, downloads](docs/chat.png)
 
 **The data is real.** [Olist's Brazilian E-Commerce dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce)
 (Kaggle, CC BY-NC-SA 4.0): 99,441 orders, 112,650 item lines, 96,096 customers, 3,095 sellers, 32,951 products,
@@ -54,13 +56,15 @@ path, not measured LLM accuracy, and nothing here is a claim of business impact.
 | Attachments | `POST /attachments` | PDF text (pypdf), CSV/text, images via the chat model's vision; extracted text rides with the question into the planner and SQL agent |
 | Answer cache + limits | `cache.py`, `limits.py` | Redis or in-process cache keyed on question + as-of + role + semantic-layer hash; per-visitor and site-wide daily limits; Bearer-protected logs |
 | A2A | `a2a.py`, `agents/reporting_agent.py`, `weekly-report.yml` | Agent Card + JSON-RPC `message/send`; a second agent compiles a weekly briefing and commits it |
-| UI | `web/` | React + Vite + Recharts: Chat (answer, chart, table, SQL, trace, export, open-in-console, paste/drop attachments), SQL console (schema browser, history, explain, export), Data dictionary (search, profiles, masked flags), role switch, new chat |
+| How it was calculated | `semantic.method_detail`, analyst `method` | Every answer carries the analyst's one-line method plus the layer's definition, formula, mandatory filters, resolved period, grouping and filters |
+| Fast path | `agents/planner.py`, `agents/sql_agent.py` | A question the layer fully explains skips the model for routing, planning, exploration, SQL and rerank; the model interprets and criticises only (about 9 s instead of 30-40 s) |
+| UI | `web/` | React + Vite + Recharts, designed for external users: Chat (statement, method, chart, table, SQL, trace, downloads, open-in-console, paste/drop attachments), SQL console (aligned schema browser, history, explain, downloads), Data dictionary (join map, profiles, data-quality notes, search), analyst/viewer switch, light and dark, phone to desktop |
 | Eval | `eval/` | 60 questions with hand-written gold SQL over the real data; execution accuracy by tag -> `eval/report.md` |
 | Tests | `tests/` | 67 tests: resolver, compiler, guard, tools, rerankers, Milvus store, cache, limits, fallback, console, masking, exports, attachments, admin analytics, graph, API, A2A. CI runs SQLite + Milvus Lite and Postgres + pgvector + Redis |
 
 ![SQL console with schema browser](docs/console.png)
 
-![Data dictionary](docs/dictionary.png)
+![Data dictionary: the join map](docs/dictionary.png)
 
 ## Run it
 
@@ -166,6 +170,10 @@ so later cold starts take seconds. A warehouse built for an older schema is dete
 the blueprint: 6 questions/minute and 25/day per visitor (hashed IP), 300 model-backed answers/day site-wide,
 `/runs` behind `ADMIN_TOKEN`.
 
+**Deploying on push**: `.github/workflows/deploy.yml` calls the service's private Deploy Hook on every push to `main`
+once the `RENDER_DEPLOY_HOOK` repository secret is set (Render → service → Settings → Deploy Hook). Without the
+secret it logs a warning and does nothing.
+
 **Static copy in the portfolio**: the same UI build (`cd web && VITE_BASE=/portfolio/bi-copilot/ VITE_API_URL=https://bicopilot.onrender.com npm run build`)
 is copied into the portfolio site at `wenjun78.github.io/portfolio/bi-copilot/`. It talks to the Render API; without a
 reachable API it serves the pre-computed bundle (chat only), while the SQL console, dictionary and attachments need
@@ -176,13 +184,15 @@ the live API.
 ```
 semantic/        metrics.yaml (the contract), glossary.md (RAG chunks), dictionary.yaml (column meanings)
 data/            schema.sql, build_olist.py, raw/olist.zip (source, CC BY-NC-SA 4.0), csv/ (built)
-src/bicopilot/   config, db, semantic, dictionary, retrieval, rerank, tools, cache, limits, access, export,
-                 attachments, sqlguard, llm, prompts, service, api, a2a, analytics
+src/bicopilot/   config, db (versioned warehouse, COPY loads), semantic (resolver, compiler, method detail),
+                 dictionary, retrieval, rerank, tools, cache, limits, access, export, attachments, sqlguard, llm,
+                 prompts, service, api, a2a, analytics
 src/bicopilot/agents/  state, planner, sql_agent, analyst, graph (supervisor)
 agents/          reporting_agent.py (second agent, talks A2A)
 eval/            questions.jsonl, run.py, export_demo.py, report.md
 tests/           67 tests
-web/             React UI (Vite). web/dist is served by the API at /
+web/             React UI (Vite): App, ResultView, MethodPanel, SqlConsole, DictionaryView, SchemaMap, ExportMenu.
+                 web/dist is served by the API at /
 admin/           Authenticated analytics dashboard UI (HTML, CSS, JavaScript)
 ```
 

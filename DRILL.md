@@ -95,3 +95,20 @@ is a policy; three is a control. (`access.py`)
 Three things *not* to say: that the compiler "uses AI" (it does not; that is the point), that the eval
 proves the LLM path is accurate (it proves the floor), and that A2A here is a full protocol implementation
 (it is the card + `message/send` shape; no streaming, no push notifications).
+
+**13. It took 35 seconds to answer. What did you do about it?**
+Counted the model calls: six or seven in sequence on the full agent path. Then asked which of them add
+information for a question the semantic layer already understands: none before the analysis. So when the
+resolver names the metric, nothing is ambiguous and no word of the question is unexplained, the plan and
+SQL come from the compiler, the router and reranker run without the model, and the model only interprets
+the rows and criticises that interpretation. Measured 14.3 s on the live service with two of those cuts
+still to make; about 9 s expected now. The trace shows which path ran, so a slow answer is explainable:
+it had a word the layer could not place, or a pasted file. (`agents/planner.py`, `agents/sql_agent.py`)
+
+**14. A business user asks "where does 6.8 % come from?" What do they see?**
+"How this was calculated" under the statement: the analyst's one-sentence method written from the SQL,
+then the semantic layer's own account: the metric's definition and formula, the mandatory filters
+(delivered orders only, delivery flag recorded), the period the question resolved to and the as-of date,
+the grouping and the question's filters. It is deterministic, so it is there even when the model is down.
+Viewers get that and the SQL; they do not get the agents' trace or retrieval ranks. (`semantic.method_detail`,
+`web/src/components/MethodPanel.tsx`)

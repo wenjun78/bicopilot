@@ -13,11 +13,11 @@
 
 ## 1. Executive summary
 
-BI Copilot converts natural-language questions about a **real e-commerce warehouse** (Olist, 99k Brazilian orders, 2016-2018) into business-defined SQL, executes queries against a constrained set of warehouse tables, and returns an answer, chart specification, underlying rows, generated SQL, and a trace of agent activity.
+BI Copilot converts natural-language questions about a **real e-commerce warehouse** (Olist, 99,441 Brazilian orders, 2016-2018) into business-defined SQL, executes queries against a constrained set of warehouse tables, and returns an answer, a one-line account of how it was calculated, a chart, the underlying rows, the SQL, and (for analysts) a trace of agent activity. Around the chat sit the surfaces a BI team expects: a guarded SQL console, a profiled data dictionary with a join map, downloads (CSV, Excel, JSON, text, Markdown), pasted PDFs or screenshots as context, and an analyst/viewer role split with column masking.
 
-Its distinguishing design choice is the **governed semantic layer**: the meanings of revenue, gross margin, fiscal periods, and dimensions are defined in YAML rather than inferred afresh by a language model for every query. A deterministic SQL compiler provides a constrained starting point; an optional LLM path performs planning, tool use, SQL refinement, analysis, and critique. The service can also operate with a deterministic no-key substitute for development and automated testing.
+Its distinguishing design choice is the **governed semantic layer**: the meanings of revenue, late delivery, customers (golden records, not per-order ids), calendar periods and dimensions are defined in YAML rather than inferred afresh by a language model for every query. A deterministic SQL compiler provides a constrained starting point; the LLM path performs planning, tool use, SQL refinement, analysis and critique **only where the layer could not resolve the question on its own** (the "confident resolution" fast path, section 7). The service can also operate with a deterministic no-key substitute for development and automated testing.
 
-**Evidence boundary:** This is a working software prototype using generated data, not a documented production rollout for business users. A deployed URL and CI configuration do not themselves demonstrate real-user adoption, service availability, measured financial returns, or production-scale concurrency. The project's reported 100% SQL execution accuracy applies to its **deterministic evaluation path**, not to a separately verified LLM-backed run.
+**Evidence boundary:** This is a working software prototype on a public dataset, not a documented production rollout for business users. A deployed URL and CI configuration do not themselves demonstrate real-user adoption, service availability, measured financial returns, or production-scale concurrency. The project's reported 100% SQL execution accuracy applies to its **deterministic evaluation path**, not to a separately verified LLM-backed run.
 
 ## 2. Background and business problem
 
@@ -80,7 +80,8 @@ flowchart TD
     Router -->|data question| Planner[Planner subgraph: resolve -> plan -> retrieve]
     Router -->|greeting, meta, out-of-scope| Response[Response]
     Planner -->|ambiguous| Response
-    Planner -->|resolved| SQL[SQL subgraph: explore -> write -> guard -> execute]
+    Planner -->|resolved, model needed| SQL[SQL subgraph: explore -> write -> guard -> execute]
+    Planner -->|confident resolution| SQL
     SQL -->|unrecoverable| Response
     SQL -->|executed| Analyst[Analyst subgraph: interpret -> critic]
     Analyst -->|revise, bounded| SQL
@@ -108,7 +109,10 @@ The orchestration is in [``src/bicopilot/agents/graph.py``](src/bicopilot/agents
 | Analyst / critic | Generates summary/chart and checks answer against plan and result | [``agents/analyst.py``](src/bicopilot/agents/analyst.py) |
 | API / service | Handles requests, answer caching, fallback, trace recording and rate limits | [``api.py``](src/bicopilot/api.py), [``service.py``](src/bicopilot/service.py) |
 | A2A and reporter | Exposes task-shaped JSON-RPC messages; compiles a briefing using the API | [``a2a.py``](src/bicopilot/a2a.py), [``reporting_agent.py``](agents/reporting_agent.py) |
-| User interface | Interactive conversation, clarifications, charts, data, SQL and trace | [``web/src/App.tsx``](web/src/App.tsx), [``ResultView.tsx``](web/src/components/ResultView.tsx) |
+| Data dictionary | Business descriptions plus live column profiles; served to the UI, indexed for retrieval, answers schema questions | [``dictionary.py``](src/bicopilot/dictionary.py), [``dictionary.yaml``](semantic/dictionary.yaml) |
+| Access control | Analyst/viewer roles; masked columns rewritten on the SQL AST, post-filtered in rows, withheld from prompts; viewers receive no trace | [``access.py``](src/bicopilot/access.py) |
+| Console, exports, attachments | Guarded ad-hoc SQL, result downloads, PDF/image/CSV text extraction into the planner's context | [``api.py``](src/bicopilot/api.py), [``export.py``](src/bicopilot/export.py), [``attachments.py``](src/bicopilot/attachments.py) |
+| User interface | Chat (answer, method, chart, rows, SQL, trace), SQL console with schema browser, dictionary with join map; light and dark; phone to desktop | [``web/src/App.tsx``](web/src/App.tsx), [``ResultView.tsx``](web/src/components/ResultView.tsx), [``SchemaMap.tsx``](web/src/components/SchemaMap.tsx) |
 
 ### Deployment paths
 
@@ -230,6 +234,16 @@ With the as-of date of **2018-08-31** (the last complete month in the data), “
 
 **Trade-off:** differing query planners, numeric types and SQL support still require separate backend tests.
 
+### G. Confident resolution: the model only where it adds value
+
+The full agent path costs six or seven sequential model calls (router, plan correction, LLM rerank, up to four ReAct tool rounds, SQL write, analyst, critic). Measured on the live service it took 30-40 s per question, which no business user tolerates. The fix is not a faster model but fewer calls: when the semantic layer names the metric, nothing is ambiguous, no word of the question is left unexplained and no attachment or clarification reply is in play, the plan and the SQL are taken from the compiler (correct by construction), the router and the reranker run without the model, and the model is asked only to interpret the rows and to criticise that interpretation. A residual word ("excluding", "place"), an ambiguous phrase or a pasted file brings the planner and the tool-using SQL agent back. The trace records which path ran and why.
+
+One live measurement (31 Oct 2026, "late delivery rate by region 2018", Render free tier, Neon Postgres, gpt-5.6-sol): 14.3 s total, of which router 1.8 s, retrieval with LLM rerank 5.5 s, Neon query 1.2 s, analyst 3.3 s, critic 2.4 s. The router and rerank model calls were removed from the fast path afterwards, so the expected figure is about 9 s; that expectation has not yet been re-measured.
+
+### H. Every answer says how it was calculated
+
+A number without its method is not auditable by the people who have to act on it. The analyst writes a one-sentence method from the SQL; the semantic layer adds the metric definition, formula, mandatory filters, the period the question resolved to, the grouping and the question's own filters. The UI shows this as "How this was calculated" under the statement; it is produced deterministically, so it is present even when the model is unavailable.
+
 ## 8. Failure handling and operational considerations
 
 | Failure / condition | Code behaviour | Remaining risk |
@@ -242,6 +256,10 @@ With the as-of date of **2018-08-31** (the last complete month in the data), “
 | Public request abuse | Visitor and global rate limits; admin protection for run-history endpoints when token configured | Visitor limits are process-local; deployment topology matters |
 | Render free-tier wake-up | Frontend polls health endpoint and can display precomputed examples | Cold-start latency and availability are not measured here |
 | A2A client requests another capability | Only the implemented JSON-RPC message method is supported | Not full A2A protocol coverage |
+| Database was built for an older schema | The warehouse is versioned; a mismatch drops and rebuilds the warehouse tables (never the logs) | A version bump reloads 450k rows; fine for this size |
+| Slow first start on a remote warehouse | The API binds its port at once and builds the copilot in the background (`/healthz` answers 503 "starting"); PostgreSQL loads use COPY; column profiles and chunk embeddings are cached | A platform may still time out a very slow first load |
+| Provider rejects function tools with reasoning_effort | The tool loop has its own reasoning-free client; an exploration failure is logged into the trace and skipped, not fatal | Other provider-specific rejections surface as fallbacks |
+| Viewer asks a question | Masked columns become a literal on the SQL AST, rows are post-filtered, prompts omit them; the response carries no trace, tool observations or retrieval ranks | Column masking is not row-level security |
 
 Key paths: [``service.py``](src/bicopilot/service.py), [``limits.py``](src/bicopilot/limits.py), [``sqlguard.py``](src/bicopilot/sqlguard.py), [``api.py``](src/bicopilot/api.py).
 
@@ -252,7 +270,7 @@ Key paths: [``service.py``](src/bicopilot/service.py), [``limits.py``](src/bicop
 - [``eval/questions.jsonl``](eval/questions.jsonl) contains **60** evaluation cases: **50 answered cases with reference SQL**, **5 clarification cases**, **3 refusals**, **1 greeting**, and **1 metadata/introductory answer**.
 - [``eval/run.py``](eval/run.py) executes the graph for each question and checks expected status. For cases with gold SQL, it compares generated SQL **result sets** with the reference query (including ordering where applicable).
 - CI runs a deterministic path with a passing threshold, and repeats tests with SQLite/in-memory vectors and PostgreSQL/pgvector/Redis configurations.
-- API, graph, semantic parsing, SQL guard and A2A surface have test coverage; these tests mainly run with the deterministic fake provider.
+- API, graph, semantic parsing, SQL guard, A2A surface, access control, SQL console, exports, warehouse bootstrap, fast path and method detail have test coverage (67 tests); these tests mainly run with the deterministic fake provider.
 
 ### What can and cannot be claimed
 
@@ -266,6 +284,7 @@ Key paths: [``service.py``](src/bicopilot/service.py), [``limits.py``](src/bicop
 | End-user productivity increased by a specific percentage | **Not measured** |
 | Users adopted the system in a real company | **Not established** |
 | The service meets a production latency or uptime SLA | **Not measured** |
+| A fast-path question answers in about 9 s on the live service | **Partly**: 14.3 s measured once before the last two model calls were removed; not re-measured |
 
 **How to reproduce local evidence**
 
@@ -306,7 +325,7 @@ No measured user adoption, hours saved, financial return, customer satisfaction 
 | P0 | Run the gold-SQL suite with an actual configured LLM | Separate real-model accuracy from deterministic compiler accuracy |
 | P0 | Add negative business-rule and permission tests | Verify that allowed syntax does not accidentally bypass mandatory metric rules or user access limits |
 | P1 | Configure a least-privileged read-only database identity and per-user authorization | Application-level SQL parsing alone is insufficient for enterprise data governance |
-| P1 | Capture latency, cost, error, fallback and retrieval metrics across representative traffic | Validate performance rather than claiming scalability from architecture |
+| P1 | Capture latency, cost, error, fallback and retrieval metrics across representative traffic | One live timing exists (14.3 s, section 7); a distribution over real questions does not |
 | P1 | Test interrupted sessions, concurrency and reload/redeployment behaviour | Assess operational readiness beyond local tests |
 | P2 | Expand complex SQL coverage (multi-fact joins, windows, share-of-total) | Address cases the deterministic compiler does not support |
 | P2 | Extend A2A compliance and exercise independent agent clients | Validate interoperability beyond Agent Card + message/send |
@@ -391,3 +410,7 @@ the existing Neon project used by Ask WJ, and configure `DATABASE_URL` privately
 The repository does not confirm that Neon is connected. The dashboard's successful
 GitHub tests do not prove the latest Render instance has deployed the route; a 404
 at `/admin` should be investigated against the running Render commit.
+
+## 14. Interface for external users
+
+The interface was redesigned once the service was meant for people outside the project. Instrument Sans for the interface, Instrument Serif where the copilot speaks (the answer statement), JetBrains Mono for SQL and figures; one teal for everything interactive; a mineral-grey canvas and white cards; a designed dark mode; a five-colour categorical palette validated for colour-vision deficiency and contrast in both schemes. The transcript reads as question lines and answer cards rather than chat bubbles, because the cards are what people share. Each card carries the statement, insights, "How this was calculated", Chart / Table / SQL / Trace, downloads, "Open in SQL console" and a provenance line (seconds, attempts, critic verdict). The empty state states the facts a reader needs before typing: currency, the as-of date relative periods count back from, that revenue covers delivered orders only, and how many governed metrics exist. The data dictionary opens on a star-schema join map drawn from the dictionary's relationships; the SQL console's schema browser is an aligned column list with key, join and masking marks. Verified at 390 px and 1280 px. Code: [``web/src``](web/src).

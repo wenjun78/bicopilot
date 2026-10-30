@@ -43,12 +43,12 @@ class SiteAnalytics:
         visitor_hash = hashlib.sha256(f"{self.secret_salt}:{visitor_id}".encode()).hexdigest()[:24]
         with self.engine.begin() as conn:
             conn.execute(insert(visits).values(
-                id=str(uuid.uuid4()),
-                created_at=_utcnow(),
-                visitor_hash=visitor_hash,
-                session_id=session_id[:64],
-                path=path[:160],
-                referrer=referrer[:200],
+                    id=str(uuid.uuid4()),
+                    created_at=_utcnow(),
+                    visitor_hash=visitor_hash,
+                    session_id=session_id[:64],
+                    path=path[:160],
+                    referrer=referrer[:200],
             ))
 
     def summary(self, days: int = 30) -> dict:

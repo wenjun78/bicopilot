@@ -12,7 +12,10 @@ from dataclasses import dataclass, field
 import sqlglot
 from sqlglot import exp
 
-ALLOWED_TABLES = {"fact_orders", "dim_date", "dim_customer", "dim_product", "dim_sales_rep", "fact_targets"}
+ALLOWED_TABLES = {
+    "fact_orders", "fact_order_items", "fact_payments", "fact_reviews",
+    "dim_date", "dim_customer", "dim_seller", "dim_product", "dim_geo",
+}  # fmt: skip
 # SQLAlchemy dialect name -> sqlglot dialect. The agent writes PostgreSQL; the guard transpiles.
 DIALECT_MAP = {
     "sqlite": "sqlite",

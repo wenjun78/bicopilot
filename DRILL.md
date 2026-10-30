@@ -3,18 +3,20 @@
 Ten questions an interviewer will ask about this repo. Answer each in 60 seconds, out loud, without
 looking. Then open the file named and check yourself.
 
-**1. Walk me through what happens when I type "top 5 customers by gross margin last quarter".**
-Router classifies it as a data question. Planner agent: the resolver maps "gross margin" to the
-`gross_margin` metric id, "customers" to the `customer` dimension, "top 5" to top_n=5, and "last quarter"
-to the last complete fiscal quarter before the as-of date (FY2027 Q1 when as-of is Sep 2026). The
-retriever pulls the metric card, the dimension card and the fact/date table docs. SQL agent: the compiler
-produces a draft from the YAML, the model refines it, the guard parses and allow-lists it, the executor
-runs it read-only with a row cap. Analyst agent writes the summary and chart spec; the critic checks the
-answer against the rows. Every node writes a trace event. (`agents/graph.py`)
+**1. Walk me through what happens when I type "top 5 categories by revenue last quarter".**
+Router classifies it as a data question. Planner agent: the resolver maps "revenue" to the `revenue`
+metric id (SUM of item price on delivered lines, base table fact_order_items), "categories" to the
+`category` dimension, "top 5" to top_n=5, and "last quarter" to the last complete calendar quarter
+before the as-of date (2018-Q2 when as-of is 2018-08-31). The retriever pulls the metric card, the
+dimension card, the table docs and the matching dictionary chunk, then reranks. SQL agent: explore
+with bound tools (describe dim_product, validate the compiler draft), write, guard, execute read-only
+with a row cap. Analyst agent writes the summary and chart spec; the critic checks it against the rows.
+Every node writes a trace event. (`agents/graph.py`)
 
 **2. Why a semantic layer instead of letting the model write SQL against the schema?**
-Because the hard failures are semantic, not syntactic: revenue that includes cancelled orders, "Q1" taken
-as calendar Q1, region taken from the rep instead of the customer. The YAML makes each metric's expression
+Because the hard failures are semantic, not syntactic: revenue that includes canceled orders, "customers"
+counted on the raw per-order IDs instead of the golden record, state taken from the seller instead of the
+buyer. The YAML makes each metric's expression
 and mandatory filter the only version that exists; the compiler emits it, the prompt quotes it, the eval
 gold SQL uses it. Changing a definition is a one-line YAML edit, not a prompt hunt. (`semantic/metrics.yaml`)
 
@@ -42,8 +44,8 @@ that is not SELECT/WITH, sets a statement timeout and a row cap, and the DB role
 read-only. (`sqlguard.py`, `db.py`)
 
 **6. How do you handle ambiguity?**
-`metrics.yaml` has an `ambiguous` map ("margin" -> USD or %). The resolver flags a phrase unless a more
-specific alias also matched ("gross margin %" wins over "margin"). The planner then returns
+`metrics.yaml` has an `ambiguous` map ("delivery" -> delivery days or on-time rate; "performance" -> three metrics). The resolver flags a phrase unless a more
+specific alias also matched ("on-time delivery rate" wins over "delivery"). The planner then returns
 `needs_clarification` with options; the API returns status `clarify`, the UI shows chips, and the reply is
 merged with the pending question on the next turn. Over A2A the task state is `input-required`.
 
@@ -60,7 +62,7 @@ with SQL, rows, chart). `reporting_agent.py` is a second agent that only knows t
 questions and compiles a Markdown briefing. (`a2a.py`, `agents/reporting_agent.py`)
 
 **9. Why does the same SQL run on SQLite and Postgres?**
-Time grouping uses `dim_date` columns (fiscal_year, fiscal_period, year_month) instead of date functions,
+Time grouping uses `dim_date` columns (year, quarter, year_month, year_quarter) instead of date functions,
 the compiler emits ANSI, and the guard transpiles with sqlglot to the engine's dialect. CI runs the full
 test suite on both. (`sqlguard.py`, `.github/workflows/ci.yml`)
 
@@ -72,6 +74,21 @@ times on a cache hit. Next: multi-fact metrics (attainment vs targets) in the co
 analyst's summary (numbers in the summary must appear in the rows); per-user row-level security pushed into
 the WHERE clause from the caller's identity (the same pattern as the MDM assistant's geo filter); streaming
 trace events over SSE; Elasticsearch in place of in-memory BM25 once the corpus outgrows one process.
+
+**11. Where does the data come from and what did you have to fix?**
+Olist's public Brazilian e-commerce dataset (Kaggle, CC BY-NC-SA): nine raw tables, 99k orders. The loader
+builds a star schema and resolves the master-data issues instead of hiding them: a golden customer record
+merges 99,441 per-order IDs into 96,096 people (one person had 17 IDs; 2,997 repeat buyers only become
+visible after the merge), duplicate reviews are collapsed to the latest, 610 products without a category
+go to 'unknown', two untranslated categories are translated, geolocation collapses a million points to one
+row per zip prefix. The dictionary's quality notes list every one of these. (`data/build_olist.py`)
+
+**12. How does the viewer role work, and why three layers?**
+Columns are flagged `masked: true` in the dictionary (customer IDs, review text). Layer one rewrites the
+SQL on the sqlglot AST so masked columns become a literal before anything runs; layer two post-filters
+the result rows by column name in case an alias or expression smuggled one through; layer three tells the
+agents in the prompt not to select or describe them. Chat and the SQL console share all three. One layer
+is a policy; three is a control. (`access.py`)
 
 ---
 

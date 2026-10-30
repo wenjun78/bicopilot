@@ -24,10 +24,10 @@ def _client(copilot, **overrides) -> TestClient:
 
 def test_chat_returns_429_after_per_minute_limit(copilot):
     with _client(copilot, visitor_per_minute=2, visitor_daily_limit=10, global_daily_limit=0) as c:
-        assert c.post("/chat", json={"question": "revenue by region FY2026"}).status_code == 200
-        r = c.post("/chat", json={"question": "orders by channel FY2026"})
+        assert c.post("/chat", json={"question": "revenue by region 2017"}).status_code == 200
+        r = c.post("/chat", json={"question": "orders by payment type 2017"})
         assert r.status_code == 200 and r.json()["questions_left"] == 8
-        blocked = c.post("/chat", json={"question": "units sold last quarter"})
+        blocked = c.post("/chat", json={"question": "items sold last quarter"})
         assert (
             blocked.status_code == 429
             and blocked.json()["code"] == "visitor_minute"
@@ -39,8 +39,8 @@ def test_global_daily_cap_counts_model_answers(copilot):
     copilot.cache.clear()
     before = copilot.model_answers_today()
     with _client(copilot, visitor_per_minute=0, visitor_daily_limit=0, global_daily_limit=before + 1) as c:
-        assert c.post("/chat", json={"question": "active customers by region"}).status_code == 200
-        r = c.post("/chat", json={"question": "revenue by tier FY2026"})
+        assert c.post("/chat", json={"question": "customers by region"}).status_code == 200
+        r = c.post("/chat", json={"question": "revenue by state 2017"})
         assert r.status_code == 429 and r.json()["code"] == "site_limit"
 
 

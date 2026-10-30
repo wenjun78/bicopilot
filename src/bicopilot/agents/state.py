@@ -20,6 +20,9 @@ class BIState(TypedDict, total=False):
     pending_question: str  # the data question a clarification reply refers to
     history: list[dict[str, str]]
     as_of: str
+    attachment_text: str
+    policy_note: str
+    role: str
     # routing
     intent: str
     # planning
@@ -61,6 +64,8 @@ class Runtime:
     retriever: Retriever
     llm: LLM
     engine: Engine
+    dictionary: dict[str, Any] | None = None
+    masked_columns: set[str] | None = None
 
 
 def trace_event(state: BIState, node: str, started: float, **extra: Any) -> list[dict[str, Any]]:

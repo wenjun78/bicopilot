@@ -5,7 +5,7 @@ from bicopilot.sqlguard import GuardError, guard
 
 def test_adds_limit_and_transpiles():
     r = guard(
-        "SELECT c.region, SUM(o.net_amount) FROM fact_orders o JOIN dim_customer c ON o.customer_id = c.customer_id GROUP BY c.region",
+        "SELECT c.region, SUM(o.product_value) FROM fact_orders o JOIN dim_customer c ON o.customer_key = c.customer_key GROUP BY c.region",
         "sqlite",
         500,
     )

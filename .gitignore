@@ -13,3 +13,5 @@ report.md
 web/node_modules/
 web/dist/
 .DS_Store
+data/raw/olist/
+data/milvus.db*

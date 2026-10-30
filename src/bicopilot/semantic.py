@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal
@@ -75,6 +75,7 @@ TIME_PHRASES = [
     r"\bytd\b|\byear to date\b",
     r"\b(last|past|trailing)\s+(12|twelve)\s+months\b",
     r"\b(calendar\s+)?20\d{2}(-(0[1-9]|1[0-2]))?\b",
+    r"\b(last|previous|prior|this|current)\s+month\b",
     r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+20\d{2}\b",
     r"\b(yoy|qoq|year[- ]over[- ]year|quarter[- ]over[- ]quarter)\b",
     r"\b(vs\.?|versus|compared (to|with)|against)\s+(last|previous|prior)\s+(year|quarter)\b",
@@ -113,7 +114,14 @@ class SemanticLayer:
         self.tables: dict[str, dict] = spec["tables"]
         self.rules: list[dict] = spec.get("rules", [])
         self.ambiguous: dict[str, list[str]] = spec.get("ambiguous", {})
-        self.fy_start = int(spec.get("fiscal_year_start_month", 4))
+        self.fy_start = 1 if spec.get("calendar") == "calendar" else int(spec.get("fiscal_year_start_month", 4))
+        self.calendar = self.fy_start == 1
+        self.year_col, self.quarter_col = (
+            ("d.year", "d.quarter") if self.calendar else ("d.fiscal_year", "d.fiscal_quarter")
+        )
+        self.bases: dict[str, dict] = spec.get("bases", {})
+        self.as_of_default: str = str(spec.get("as_of_default", ""))
+        self.spec_dir: Path = Path(".")
         self._metric_phrases = self._phrase_index(self.metrics)
         self._dimension_phrases = self._phrase_index(self.dimensions)
         self._value_index = self._build_value_index()
@@ -121,7 +129,9 @@ class SemanticLayer:
     # ----- loading ---------------------------------------------------------------------------
     @classmethod
     def load(cls, semantic_dir: Path) -> SemanticLayer:
-        return cls(yaml.safe_load((semantic_dir / "metrics.yaml").read_text(encoding="utf-8")))
+        layer = cls(yaml.safe_load((semantic_dir / "metrics.yaml").read_text(encoding="utf-8")))
+        layer.spec_dir = Path(semantic_dir)
+        return layer
 
     def _phrase_index(self, items: dict[str, dict]) -> list[tuple[str, str]]:
         pairs: list[tuple[str, str]] = []
@@ -158,6 +168,16 @@ class SemanticLayer:
         values = f"; values: {', '.join(map(str, d['values']))}" if d.get("values") else ""
         return f"{dim_id}: column {d['column']} (table {d['table']}){values}"
 
+    def aliases_text(self) -> str:
+        parts = []
+        for base, spec in self.bases.items():
+            parts.append(f"{base} {spec['alias']}")
+            for tbl, join in spec.get("joins", {}).items():
+                alias = join.split(" ON ")[0].split()[-1]
+                if f"{tbl} {alias}" not in parts:
+                    parts.append(f"{tbl} {alias}")
+        return ", ".join(parts) or "fact_orders o, dim_date d, dim_customer c, dim_product p"
+
     def catalog_text(self) -> str:
         metrics = "\n".join(f"- {self.metric_card(m)}" for m in self.metrics)
         dims = "\n".join(f"- {self.dimension_card(d)}" for d in self.dimensions)
@@ -165,9 +185,17 @@ class SemanticLayer:
 
     # ----- fiscal calendar -------------------------------------------------------------------
     def fiscal_of(self, d: date) -> tuple[int, int]:
+        """(period year, period quarter) for a date: calendar when the layer says so, else fiscal."""
+        if self.calendar:
+            return d.year, (d.month - 1) // 3 + 1
         fy = d.year + 1 if d.month >= self.fy_start else d.year
         fq = ((d.month - self.fy_start) % 12) // 3 + 1
         return fy, fq
+
+    def period_label(self, year: int | None, quarter: int | None = None) -> str:
+        if self.calendar:
+            return (f"{year}" if year else "") + (f" Q{quarter}" if quarter else "")
+        return (f"FY{year}" if year else "") + (f" Q{quarter}" if quarter else "")
 
     def previous_quarter(self, fy: int, fq: int) -> tuple[int, int]:
         return (fy, fq - 1) if fq > 1 else (fy - 1, 4)
@@ -183,16 +211,22 @@ class SemanticLayer:
         for pat in TIME_PHRASES:
             consumed = re.sub(pat, " ", consumed)
 
-        for phrase, key in self.ambiguous.items():
-            if re.search(_WORD.format(re.escape(phrase)), consumed):
-                # only ambiguous if no more specific phrase resolves it (e.g. "gross margin %" beats "margin")
-                specific = [
-                    p
-                    for p, k in self._metric_phrases
-                    if phrase in p and p != phrase and re.search(_WORD.format(re.escape(p)), consumed)
-                ]
-                if not specific:
-                    res.ambiguous[phrase] = list(key)
+        # numeric value filters first ("review score 5", "5 stars") so the dimension words are consumed before
+        # metric aliases such as "review score" can claim them
+        for value_lc, dim, value in self._value_index:
+            if not value_lc.isdigit():
+                continue
+            dim_words = [
+                dim.replace("_", " "),
+                *[a.lower() for a in self.dimensions[dim].get("aliases", [])],
+                "star",
+                "stars",
+            ]
+            near = "|".join(re.escape(w) for w in dim_words)
+            pat = rf"(?:(?:{near})\s*(?:of|=|:)?\s*{value_lc}\b|\b{value_lc}\s*[- ]?(?:{near}))"
+            if re.search(pat, consumed):
+                res.filters.append(Filter(dimension=dim, value=value))
+                consumed = re.sub(pat, " ", consumed)
 
         for phrase, key in self._metric_phrases:
             if key in res.metrics:
@@ -201,6 +235,11 @@ class SemanticLayer:
                 res.metrics.append(key)
                 res.matched_phrases[key] = phrase
                 consumed = re.sub(_WORD.format(re.escape(phrase)), " ", consumed)
+
+        # ambiguity: a phrase still present after metric matching, with none of its candidate metrics matched
+        for phrase, key in self.ambiguous.items():
+            if re.search(_WORD.format(re.escape(phrase)), consumed) and not any(k in res.metrics for k in key):
+                res.ambiguous[phrase] = list(key)
 
         for phrase, key in self._dimension_phrases:
             if key in res.dimensions:
@@ -211,12 +250,17 @@ class SemanticLayer:
                 consumed = re.sub(_WORD.format(re.escape(phrase)), " ", consumed)
 
         for value_lc, dim, value in self._value_index:
+            if value_lc.isdigit():
+                continue  # handled above
+            if len(value_lc) <= 2:
+                # two-letter codes (state UFs): require an uppercase token in the original question or a location cue
+                upper_hit = re.search(_WORD.format(re.escape(value)), question) is not None and value.isupper()
+                cue = re.search(rf"\b(in|from|for|state|uf)\s+{re.escape(value_lc)}\b", consumed) is not None
+                if not (upper_hit or cue):
+                    continue
             if re.search(_WORD.format(re.escape(value_lc)), consumed):
                 res.filters.append(Filter(dimension=dim, value=value))
                 consumed = re.sub(_WORD.format(re.escape(value_lc)), " ", consumed)
-                if dim in res.dimensions and len([f for f in res.filters if f.dimension == dim]) == 1:
-                    # "revenue in APAC by region" -> keep grouping; "revenue in APAC" alone -> filter only
-                    pass
 
         # a filter on a dimension removes it from group-by unless the question says "by <dim>"
         for f in res.filters:
@@ -234,13 +278,25 @@ class SemanticLayer:
                     if not re.search(rf"\b(by|per|each|across)\s+{re.escape(phrase)}", q):
                         res.dimensions.remove(key)
 
-        # a phrase that is ambiguous between a metric and a dimension (e.g. "customers") is a dimension
-        # whenever another metric is present: "top 5 customers by revenue" needs no clarification
-        for phrase, options in list(res.ambiguous.items()):
+        # a breakdown BY status with the delivered-only order count is meaningless: use the any-status count
+        if "status" in res.dimensions and "order_count" in res.metrics and "all_orders" in self.metrics:
+            res.metrics[res.metrics.index("order_count")] = "all_orders"
+        # "revenue from orders with ..." : a second counting metric pulled in by a connective phrase is noise
+        if len(res.metrics) > 1:
+            for m in list(res.metrics):
+                phrase = res.matched_phrases.get(m, "")
+                if phrase and re.search(rf"\b(from|with|of|for|per)\s+{re.escape(phrase)}\b", q):
+                    res.metrics.remove(m)
+        # a phrase that is ambiguous between a metric and a dimension (e.g. "customers", "sellers") is a dimension
+        # whenever another metric is present: "top 5 sellers by revenue" needs no clarification
+        for phrase, options in self.ambiguous.items():
             dims = [o for o in options if o in self.dimensions]
             mets = [o for o in options if o in self.metrics]
-            if dims and mets and any(m not in mets for m in res.metrics):
-                del res.ambiguous[phrase]
+            if not (dims and mets):
+                continue
+            present = re.search(_WORD.format(re.escape(phrase)), q) is not None
+            if present and any(m not in mets for m in res.metrics):
+                res.ambiguous.pop(phrase, None)
                 for m in mets:
                     if m in res.metrics:
                         res.metrics.remove(m)
@@ -254,20 +310,36 @@ class SemanticLayer:
                 res.order = "asc"
         elif re.search(r"\b(top|best|largest|highest|most|biggest|leading)\b", q):
             res.top_n = 10
-        elif re.search(r"\b(bottom|lowest|worst|smallest|fewest|least)\b", q):
+        elif re.search(r"\b(bottom|lowest|smallest|fewest|least)\b", q):
             res.top_n, res.order = 10, "asc"
+        elif re.search(r"\bworst\b", q):
+            res.top_n, res.order = 10, "asc"
+        if m and m.group(1) == "worst" and res.metrics and self.metrics[res.metrics[0]].get("bad_is_high"):
+            res.order = "desc"
+        elif (
+            m is None and re.search(r"\bworst\b", q) and res.metrics and self.metrics[res.metrics[0]].get("bad_is_high")
+        ):
+            res.order = "desc"
+        if (
+            m
+            and m.group(1) in ("best", "top", "highest", "largest")
+            and res.metrics
+            and self.metrics[res.metrics[0]].get("bad_is_high")
+            and re.search(r"\bbest\b", q)
+        ):
+            res.order = "asc"
         fy_now, fq_now = self.fiscal_of(as_of)
         if re.search(
             r"\b(yoy|year[- ]over[- ]year|vs\.? last year|versus last year|compared (to|with) last year|against last year)\b",
             q,
         ):
             res.compare = "yoy"
-            if res.time is None or res.time.label == "last fiscal year":
-                res.time = TimeFilter(fiscal_year=fy_now, label="this fiscal year vs last")
-            if res.time.fiscal_year == fy_now and not res.time.fiscal_quarter:
-                # the current fiscal year is incomplete: compare fiscal year-to-date with the same window last year
+            if res.time is None or res.time.label in ("last fiscal year", "last year"):
+                res.time = TimeFilter(fiscal_year=fy_now, label="this year vs last")
+            if res.time.fiscal_year == fy_now and not res.time.fiscal_quarter and not re.search(r"\b20\d{2}\b", q):
+                # the current year is incomplete: compare year-to-date with the same window last year
                 res.time.year_month_to = as_of.strftime("%Y-%m")
-                res.time.label = "fiscal year to date vs same period last year"
+                res.time.label = "year to date vs same period last year"
         elif re.search(
             r"\b(qoq|quarter[- ]over[- ]quarter|vs\.? last quarter|versus last quarter|compared (to|with) last quarter)\b",
             q,
@@ -289,15 +361,18 @@ class SemanticLayer:
             t.fiscal_year = int("20" + m.group(2))
             t.label = m.group(0).strip()
         elif re.search(r"\b(this|current) (fiscal )?year\b", q):
-            t.fiscal_year, t.label = fy_now, "this fiscal year"
+            t.fiscal_year, t.label = fy_now, "this year" if self.calendar else "this fiscal year"
         elif re.search(r"\b(last|previous|prior) (fiscal )?year\b", q):
-            t.fiscal_year, t.label = fy_now - 1, "last fiscal year"
+            t.fiscal_year, t.label = fy_now - 1, "last year" if self.calendar else "last fiscal year"
         elif re.search(r"\bytd\b|year to date", q):
-            t.fiscal_year, t.label = fy_now, "fiscal year to date"
+            t.fiscal_year, t.label = fy_now, "year to date"
             t.year_month_to = as_of.strftime("%Y-%m")
         mq = re.search(r"\b(?:fiscal\s+)?q([1-4])\b", q)
         if mq:
             t.fiscal_quarter = int(mq.group(1))
+            year_near = re.search(r"\b(20\d{2})\b", q)
+            if t.fiscal_year is None and year_near and self.calendar:
+                t.fiscal_year = int(year_near.group(1))
             if t.fiscal_year is None:
                 t.fiscal_year = fy_now if int(mq.group(1)) <= fq_now else fy_now - 1
             t.label = (t.label + " " if t.label else "") + f"Q{mq.group(1)}"
@@ -306,7 +381,14 @@ class SemanticLayer:
             t.label = "last quarter"
         elif re.search(r"\b(this|current) quarter\b", q):
             t.fiscal_year, t.fiscal_quarter, t.label = fy_now, fq_now, "this quarter"
-        if t.fiscal_year is None and t.fiscal_quarter is None:
+        if t.fiscal_year is None and t.fiscal_quarter is None and re.search(r"\b(last|previous|prior) month\b", q):
+            prev = as_of.replace(day=1) - timedelta(days=1)  # the month before the as-of month
+            t.year_month_from = t.year_month_to = prev.strftime("%Y-%m")
+            t.label = "last month"
+        elif t.fiscal_year is None and t.fiscal_quarter is None and re.search(r"\b(this|current) month\b", q):
+            t.year_month_from = t.year_month_to = as_of.strftime("%Y-%m")
+            t.label = "this month"
+        if t.fiscal_year is None and t.fiscal_quarter is None and not t.year_month_from:
             ym = re.search(r"\b(20\d{2})-(0[1-9]|1[0-2])\b", q)
             mon = re.search(r"\b(" + "|".join(list(MONTHS_FULL) + list(MONTHS)) + r")\s+(20\d{2})\b", q)
             if ym:
@@ -324,7 +406,10 @@ class SemanticLayer:
                 cal = re.search(r"\b(?:calendar )?(20\d{2})\b", q)
                 if cal:
                     y = int(cal.group(1))
-                    t.year_month_from, t.year_month_to, t.label = f"{y}-01", f"{y}-12", f"calendar {y}"
+                    if self.calendar:
+                        t.fiscal_year, t.label = y, str(y)
+                    else:
+                        t.year_month_from, t.year_month_to, t.label = f"{y}-01", f"{y}-12", f"calendar {y}"
         return t if (t.fiscal_year or t.fiscal_quarter or t.year_month_from) else None
 
     # ----- deterministic compiler ------------------------------------------------------------
@@ -370,15 +455,11 @@ class SemanticLayer:
                 f"(cur.{metric} - prev.{metric}) * 100.0 / NULLIF(prev.{metric}, 0) AS change_pct\n"
                 f"FROM ({cur_sql}) cur, ({prev_sql}) prev"
             )
-        label = (
-            f"FY{t.fiscal_year}"
-            + (f" Q{t.fiscal_quarter}" if t.fiscal_quarter else "")
-            + (f" to {t.year_month_to}" if t.year_month_to else "")
+        label = self.period_label(t.fiscal_year, t.fiscal_quarter) + (
+            f" to {t.year_month_to}" if t.year_month_to else ""
         )
-        plabel = (
-            f"FY{prev_time.fiscal_year}"
-            + (f" Q{prev_time.fiscal_quarter}" if prev_time.fiscal_quarter else "")
-            + (f" to {prev_time.year_month_to}" if prev_time.year_month_to else "")
+        plabel = self.period_label(prev_time.fiscal_year, prev_time.fiscal_quarter) + (
+            f" to {prev_time.year_month_to}" if prev_time.year_month_to else ""
         )
         notes.append(f"{plan.compare.upper()}: current = {label}, previous = {plabel}")
         return sql, notes
@@ -399,6 +480,14 @@ class SemanticLayer:
             needed_tables.add(spec["table"])
         for m in metrics:
             select.append(f"{self.metrics[m]['sql']} AS {m}")
+            for tbl in self.metrics[m].get("requires", []):
+                needed_tables.add(tbl)
+        base = self.metrics[metrics[0]].get("base") or self.metrics[metrics[0]].get("base_table", "fact_orders")
+        for m in metrics[1:]:
+            if (self.metrics[m].get("base") or self.metrics[m].get("base_table", "fact_orders")) != base:
+                notes.append(
+                    f"metric {m} aggregates over a different base table than {metrics[0]}; the SQL agent must combine them"
+                )
         where: list[str] = list(self.metrics[metrics[0]].get("filters", []))
         for m in metrics[1:]:
             if list(self.metrics[m].get("filters", [])) != where:
@@ -418,19 +507,46 @@ class SemanticLayer:
             t = plan.time
             needed_tables.add("dim_date")
             if t.fiscal_year:
-                where.append(f"d.fiscal_year = {int(t.fiscal_year)}")
+                where.append(f"{self.year_col} = {int(t.fiscal_year)}")
             if t.fiscal_quarter:
-                where.append(f"d.fiscal_quarter = {int(t.fiscal_quarter)}")
+                where.append(f"{self.quarter_col} = {int(t.fiscal_quarter)}")
             if t.year_month_from:
                 where.append(f"d.year_month >= '{t.year_month_from}'")
             if t.year_month_to:
                 where.append(f"d.year_month <= '{t.year_month_to}'")
-        joins = [
-            self.tables[tbl]["join"]
-            for tbl in ("dim_date", "dim_customer", "dim_product", "dim_sales_rep")
-            if tbl in needed_tables
-        ]
-        sql = "SELECT " + ", ".join(select) + "\nFROM fact_orders o\n" + ("\n".join(joins) + "\n" if joins else "")
+        base_spec = self.bases.get(base) or {
+            "alias": "o",
+            "joins": {k: v["join"] for k, v in self.tables.items() if "join" in v},
+        }
+        join_map: dict[str, str] = dict(base_spec.get("joins", {}))
+        needed_tables.discard(base)
+        if (
+            any(tbl not in join_map for tbl in needed_tables)
+            and base == "fact_orders"
+            and "fact_order_items" in self.bases
+        ):
+            # order-grain metric sliced by a product/seller dimension: pivot to the item grain through the orders join
+            alt = self.bases["fact_order_items"]
+            if all(tbl in alt["joins"] for tbl in needed_tables):
+                base, base_spec, join_map = "fact_order_items", alt, dict(alt["joins"])
+                needed_tables.add("fact_orders")
+                notes.append(
+                    "order-level metric evaluated at item grain (joined through fact_orders) to slice by product/seller"
+                )
+        # a dimension on fact_orders reached from the items base needs the orders join first
+        if base == "fact_order_items" and any(tbl == "fact_orders" for tbl in needed_tables):
+            pass
+        ordered = [tbl for tbl in join_map if tbl in needed_tables]
+        missing = [tbl for tbl in needed_tables if tbl not in join_map]
+        if missing:
+            notes.append(f"no join from {base} to {', '.join(sorted(missing))}; the SQL agent must write it")
+        joins = [join_map[tbl] for tbl in ordered]
+        sql = (
+            "SELECT "
+            + ", ".join(select)
+            + f"\nFROM {base} {base_spec['alias']}\n"
+            + ("\n".join(joins) + "\n" if joins else "")
+        )
         if where:
             sql += "WHERE " + " AND ".join(where) + "\n"
         if group:
@@ -463,7 +579,7 @@ class SemanticLayer:
         elif not res.metrics and res.dimensions:
             plan.needs_clarification = True
             plan.clarification = "Which metric should I use?"
-            plan.options = ["Revenue", "Orders", "Units sold", "Gross margin %"]
+            plan.options = [self.metrics[m]["label"] for m in list(self.metrics)[:4]]
         plan.steps = [
             f"resolve metrics {plan.metrics or '?'} and dimensions {plan.dimensions or '[]'}",
             "retrieve definitions and table docs",

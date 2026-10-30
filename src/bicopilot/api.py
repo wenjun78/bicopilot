@@ -3,11 +3,13 @@ and the built React app served at / when web/dist exists."""
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -15,10 +17,14 @@ from pydantic import BaseModel, Field
 
 from .a2a import agent_card, extract_text, jsonrpc_error, task_from_result
 from .analytics import SiteAnalytics
+from .attachments import extract
 from .config import ROOT, Settings
+from .db import QueryError
+from .export import FORMATS, MEDIA, conversation_markdown, export_rows
 from .limits import Verdict, VisitorLimiter, bearer_ok, client_ip
 from .service import Copilot
 from .service import runs as runs_table
+from .sqlguard import GuardError
 
 log = logging.getLogger("bicopilot")
 WEB_DIST = ROOT / "web" / "dist"
@@ -37,6 +43,34 @@ class ChatRequest(BaseModel):
     pending_question: str = ""
     history: list[dict[str, str]] = Field(default_factory=list)
     session_id: str = ""
+    role: str = "analyst"
+    retain_memory: bool = True
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=4)
+
+
+class SqlRequest(BaseModel):
+    sql: str = Field(min_length=1, max_length=8000)
+    role: str = "analyst"
+
+
+class ExplainRequest(BaseModel):
+    sql: str = ""
+    columns: list[str]
+    rows: list[list[Any]] = Field(max_length=500)
+    role: str = "analyst"
+
+
+class ExportRequest(BaseModel):
+    columns: list[str]
+    rows: list[list[Any]] = Field(max_length=5000)
+    format: str = "csv"
+    title: str = ""
+    sql: str = ""
+
+
+class ConversationExportRequest(BaseModel):
+    turns: list[dict[str, Any]] = Field(max_length=200)
+    format: str = "md"
 
 
 def create_app(settings: Settings | None = None, copilot: Copilot | None = None) -> FastAPI:
@@ -137,7 +171,13 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
             return refuse(verdict)
         try:
             result = c.ask(
-                req.question, pending_question=req.pending_question, history=req.history[-6:], session_id=req.session_id
+                req.question,
+                pending_question=req.pending_question,
+                history=req.history[-6:],
+                session_id=req.session_id,
+                role=req.role,
+                attachments=req.attachments,
+                retain_memory=req.retain_memory,
             )
         except Exception as exc:  # the graph has its own error paths; this is the last resort
             log.exception("chat failed")
@@ -145,6 +185,100 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         if verdict.left_today is not None:
             result["questions_left"] = verdict.left_today
         return result
+
+    # ----- SQL console, dictionary, exports, attachments ----------------------------------------
+    @app.post("/sql")
+    def sql(req: SqlRequest, request: Request):
+        c: Copilot = request.app.state.copilot
+        verdict = admit(request)
+        if not verdict.allowed:
+            return refuse(verdict)
+        try:
+            return c.run_sql(req.sql, role=req.role)
+        except GuardError as exc:
+            raise HTTPException(400, f"rejected by the guard: {exc}") from exc
+        except QueryError as exc:
+            raise HTTPException(400, f"query failed: {exc}") from exc
+
+    @app.post("/sql/explain")
+    def sql_explain(req: ExplainRequest, request: Request):
+        c: Copilot = request.app.state.copilot
+        verdict = admit(request)
+        if not verdict.allowed:
+            return refuse(verdict)
+        return c.explain_sql(req.sql, req.columns, req.rows, role=req.role)
+
+    @app.get("/dictionary")
+    def dictionary(request: Request, role: str = "analyst") -> dict[str, Any]:
+        c: Copilot = request.app.state.copilot
+        d = c.dictionary
+        if role == "viewer":  # the viewer sees that a column exists and is masked, not its samples
+            d = {
+                **d,
+                "tables": [
+                    {
+                        **t,
+                        "columns": [
+                            {
+                                **col,
+                                "samples": [] if col.get("masked_for_viewer") else col["samples"],
+                                "min": None if col.get("masked_for_viewer") else col["min"],
+                                "max": None if col.get("masked_for_viewer") else col["max"],
+                            }
+                            for col in t["columns"]
+                        ],
+                    }
+                    for t in d["tables"]
+                ],
+            }
+        return d
+
+    @app.post("/export")
+    def export(req: ExportRequest, request: Request):
+        fmt = req.format.lower()
+        if fmt not in FORMATS:
+            raise HTTPException(400, f"format must be one of {', '.join(FORMATS)}")
+        data = export_rows(
+            req.columns,
+            req.rows,
+            fmt,
+            title=req.title,
+            sql=req.sql,
+            meta={"source": "bi-copilot", "as_of": request.app.state.copilot.as_of},
+        )
+        name = (re.sub(r"[^a-z0-9]+", "-", req.title.lower()).strip("-") or "result")[:60]
+        return Response(
+            content=data, media_type=MEDIA[fmt], headers={"Content-Disposition": f'attachment; filename="{name}.{fmt}"'}
+        )
+
+    @app.post("/export/conversation")
+    def export_conversation(req: ConversationExportRequest):
+        if req.format == "json":
+            data = json.dumps(req.turns, indent=2, default=str).encode()
+            return Response(
+                content=data,
+                media_type=MEDIA["json"],
+                headers={"Content-Disposition": 'attachment; filename="conversation.json"'},
+            )
+        data = conversation_markdown(req.turns).encode()
+        return Response(
+            content=data,
+            media_type=MEDIA["md"],
+            headers={"Content-Disposition": 'attachment; filename="conversation.md"'},
+        )
+
+    @app.post("/attachments")
+    async def attachments(request: Request, file: UploadFile = File(...)):
+        c: Copilot = request.app.state.copilot
+        verdict = admit(request)
+        if not verdict.allowed:
+            return refuse(verdict)
+        data = await file.read()
+        try:
+            extracted = extract(file.filename or "attachment", file.content_type or "", data, llm=c.llm)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        return extracted.as_dict()
 
     @app.get("/catalog")
     def catalog(request: Request) -> dict[str, Any]:

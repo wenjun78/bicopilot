@@ -41,14 +41,17 @@ def build_analyst(rt: Runtime):
         if plan.time and plan.time.label and not any(plan.time.label in c for c in out.caveats):
             label = plan.time.label
             resolved = []
-            if plan.time.fiscal_year:
-                resolved.append(f"FY{plan.time.fiscal_year}")
-            if plan.time.fiscal_quarter:
-                resolved.append(f"Q{plan.time.fiscal_quarter}")
+            if plan.time.fiscal_year or plan.time.fiscal_quarter:
+                resolved.append(rt.semantic.period_label(plan.time.fiscal_year, plan.time.fiscal_quarter).strip())
             if plan.time.year_month_from:
                 resolved.append(f"{plan.time.year_month_from}..{plan.time.year_month_to}")
             if resolved and label.lower() not in " ".join(resolved).lower():
-                out.caveats.append(f'"{label}" resolved to {" ".join(resolved)} (fiscal calendar, FY starts April).')
+                note = (
+                    "calendar periods, as of " + state["as_of"]
+                    if rt.semantic.calendar
+                    else "fiscal calendar, FY starts April"
+                )
+                out.caveats.append(f'"{label}" resolved to {" ".join(resolved)} ({note}).')
         if state.get("truncated"):
             out.caveats.append(f"Result capped at {rt.settings.max_rows} rows.")
         return {

@@ -1,0 +1,157 @@
+# Data dictionary: the business meaning of every table and column. Profiles (counts, nulls, ranges, samples)
+# are computed from the live warehouse at startup; this file carries what cannot be computed.
+# Source: Olist, Brazilian E-Commerce Public Dataset (Kaggle), CC BY-NC-SA 4.0.
+
+tables:
+  fact_orders:
+    description: One row per order placed on the marketplace. Status lifecycle, timestamps, delivery outcome, totals, main payment type and the latest review score.
+    grain: order
+    source: olist_orders_dataset + aggregates of items, payments and reviews
+    columns:
+      order_id: {description: Order identifier (32-char hash). Primary key.}
+      customer_key: {description: Golden customer record of the buyer., joins_to: dim_customer.customer_key}
+      purchase_date: {description: Date the order was placed., joins_to: dim_date.date_key}
+      purchase_ts: {description: Purchase timestamp (local time, Brazil).}
+      status: {description: "Order lifecycle status: delivered, shipped, canceled, unavailable (seller could not fulfil), invoiced, processing, created, approved."}
+      approved_ts: {description: Payment approval timestamp.}
+      carrier_ts: {description: Handed to the logistics partner.}
+      delivered_ts: {description: Delivered to the customer; NULL unless delivered.}
+      estimated_delivery_date: {description: Delivery date promised to the customer at checkout.}
+      delivery_days: {description: Days from purchase to delivery; NULL unless delivered., unit: days}
+      delivered_late: {description: 1 if delivered after the estimated date, 0 if on time; NULL unless delivered.}
+      days_late: {description: Delivered minus estimated date in days (negative = early); NULL unless delivered., unit: days}
+      item_count: {description: Number of item lines on the order.}
+      product_value: {description: Sum of item prices (GMV share of this order), freight excluded., unit: BRL}
+      freight_value: {description: Sum of freight charged on the order., unit: BRL}
+      payment_value: {description: Sum of all payment records; product value plus freight, after vouchers. NULL for 1 order without a payment record., unit: BRL}
+      payment_type: {description: "Payment type of the largest payment record: credit_card, boleto (bank slip), voucher, debit_card, not_defined."}
+      installments: {description: Highest installment count across payment records (credit cards only exceed 1).}
+      review_score: {description: Latest review score for the order, 1 (worst) to 5 (best); NULL for 768 orders never reviewed.}
+      review_has_text: {description: 1 if the latest review carries a free-text message.}
+  fact_order_items:
+    description: One row per item line; price and freight are per line. The base for revenue, freight, items and anything sliced by product or seller.
+    grain: order line
+    source: olist_order_items_dataset, denormalised with customer and status from the order
+    columns:
+      order_id: {description: Order the line belongs to., joins_to: fact_orders.order_id}
+      item_seq: {description: Line number within the order (1 to 21).}
+      product_key: {description: Product sold., joins_to: dim_product.product_key}
+      seller_key: {description: Seller who fulfilled the line., joins_to: dim_seller.seller_key}
+      customer_key: {description: Buyer (golden record), copied from the order for cheaper joins., joins_to: dim_customer.customer_key}
+      purchase_date: {description: Order purchase date, copied from the order., joins_to: dim_date.date_key}
+      status: {description: Order status, copied from the order so revenue can filter without a join.}
+      price: {description: Item price paid by the customer, freight excluded., unit: BRL}
+      freight_value: {description: Freight charged for this line., unit: BRL}
+      shipping_limit_date: {description: Deadline for the seller to hand the item to the carrier.}
+  fact_payments:
+    description: One row per payment record. An order can have several (for example a voucher plus a credit card).
+    grain: payment record
+    source: olist_order_payments_dataset
+    columns:
+      order_id: {description: Order paid., joins_to: fact_orders.order_id}
+      payment_seq: {description: Sequence of the payment record within the order.}
+      payment_type: {description: "credit_card, boleto, voucher, debit_card or not_defined."}
+      installments: {description: Number of installments chosen (1 to 24).}
+      payment_value: {description: Amount of this payment record., unit: BRL}
+  fact_reviews:
+    description: One row per customer review. 547 orders carry more than one review; fact_orders keeps the latest score.
+    grain: review
+    source: olist_order_reviews_dataset
+    columns:
+      review_id: {description: Review identifier.}
+      order_id: {description: Order reviewed., joins_to: fact_orders.order_id}
+      review_score: {description: Score 1 to 5.}
+      has_title: {description: 1 if the review has a title.}
+      has_message: {description: 1 if the review has a free-text message (about 41% do).}
+      comment_title: {description: Review title, Portuguese free text. Hidden for the viewer role., masked: true}
+      comment_message: {description: Review message, Portuguese free text. Hidden for the viewer role., masked: true}
+      review_date: {description: Date the review survey was sent.}
+      answered_ts: {description: Timestamp the customer answered.}
+  dim_customer:
+    description: Golden customer record, one row per person. The source issues a new customer_id per order; rows are merged on customer_unique_id (99,441 IDs to 96,096 people).
+    grain: person
+    source: olist_customers_dataset, deduplicated on customer_unique_id; attributes from the latest order
+    columns:
+      customer_key: {description: Surrogate key. Primary key.}
+      customer_unique_id: {description: Stable person identifier from the source (32-char hash). Hidden for the viewer role., masked: true}
+      customer_state: {description: Two-letter Brazilian state (UF) of the latest order, e.g. SP, RJ, MG.}
+      customer_city: {description: City of the latest order.}
+      zip_prefix: {description: First five digits of the postcode., joins_to: dim_geo.zip_prefix}
+      region: {description: "Brazilian macro-region derived from the state: Southeast, South, Northeast, North, Center-West."}
+      first_order_date: {description: Date of the person's first order.}
+      last_order_date: {description: Date of the person's latest order.}
+      order_count: {description: Orders placed by this person (any status).}
+      is_repeat: {description: 1 if the person placed more than one order (2,997 people).}
+      source_id_count: {description: Raw customer_id values merged into this record (max 17).}
+  dim_seller:
+    description: Sellers (merchants) on the marketplace.
+    grain: seller
+    source: olist_sellers_dataset
+    columns:
+      seller_key: {description: Surrogate key. Primary key.}
+      seller_id: {description: Seller identifier (32-char hash).}
+      seller_state: {description: Seller's state (UF).}
+      seller_city: {description: Seller's city.}
+      seller_region: {description: Seller's macro-region.}
+  dim_product:
+    description: Products. The source has no product names, only IDs, categories and physical attributes.
+    grain: product
+    source: olist_products_dataset + product_category_name_translation
+    columns:
+      product_key: {description: Surrogate key. Primary key.}
+      product_id: {description: Product identifier (32-char hash).}
+      category: {description: Product category in English (73 values); 'unknown' for 610 products with no category in the source.}
+      category_pt: {description: Original Portuguese category name.}
+      category_group: {description: "Coarse grouping of the categories into 10 groups, e.g. Home & Furniture, Electronics, Fashion."}
+      weight_g: {description: Product weight., unit: g}
+      length_cm: {description: Package length., unit: cm}
+      height_cm: {description: Package height., unit: cm}
+      width_cm: {description: Package width., unit: cm}
+      photos_qty: {description: Number of listing photos.}
+      name_length: {description: Characters in the product name.}
+      description_length: {description: Characters in the product description.}
+  dim_date:
+    description: Calendar table covering every day from the first order to the last estimated delivery.
+    grain: day
+    source: generated
+    columns:
+      date_key: {description: Calendar date. Primary key.}
+      year: {description: Calendar year.}
+      quarter: {description: Calendar quarter 1 to 4.}
+      month: {description: Month 1 to 12.}
+      month_name: {description: Three-letter month name.}
+      year_month: {description: "'YYYY-MM' label for monthly grouping."}
+      year_quarter: {description: "'YYYY-Qn' label for quarterly grouping."}
+      day_of_week: {description: 1 = Monday to 7 = Sunday.}
+      is_weekend: {description: 1 on Saturday and Sunday.}
+  dim_geo:
+    description: One row per postcode prefix with mean coordinates, collapsed from about one million raw geolocation points.
+    grain: zip prefix
+    source: olist_geolocation_dataset, points outside Brazil dropped, mean per prefix
+    columns:
+      zip_prefix: {description: First five digits of the postcode. Primary key.}
+      lat: {description: Mean latitude of the prefix's points.}
+      lng: {description: Mean longitude of the prefix's points.}
+      city: {description: Most frequent city name for the prefix.}
+      state: {description: Most frequent state for the prefix.}
+      point_count: {description: Raw geolocation points collapsed into this row.}
+
+relationships:
+  - "fact_order_items.order_id -> fact_orders.order_id (many lines per order)"
+  - "fact_order_items.product_key -> dim_product.product_key"
+  - "fact_order_items.seller_key -> dim_seller.seller_key"
+  - "fact_order_items.customer_key -> dim_customer.customer_key"
+  - "fact_orders.customer_key -> dim_customer.customer_key"
+  - "fact_orders.purchase_date -> dim_date.date_key"
+  - "fact_payments.order_id -> fact_orders.order_id (one or more payments per order)"
+  - "fact_reviews.order_id -> fact_orders.order_id (usually one review per order)"
+  - "dim_customer.zip_prefix -> dim_geo.zip_prefix"
+
+quality_notes:
+  - "8 orders are marked delivered without a delivery timestamp; delivery_days and delivered_late are NULL for them and delivery metrics skip them."
+  - "610 products have no category in the source and are grouped under 'unknown'; two categories had no official English translation and were translated here."
+  - "547 orders carry more than one review; fact_orders.review_score keeps the latest. 768 orders were never reviewed."
+  - "The source issues a new customer_id per order; dim_customer merges them on customer_unique_id, which is how repeat buyers become visible (2,997 people, one with 17 raw IDs)."
+  - "Orders after August 2018 are a sparse tail (20 orders); the as-of date 2018-08-31 excludes them from relative periods."
+  - "Geolocation points outside Brazil's bounding box were dropped before averaging coordinates per zip prefix."
+  - "Amounts are BRL as recorded; no inflation or exchange-rate adjustment."

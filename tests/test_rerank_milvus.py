@@ -10,11 +10,11 @@ from bicopilot.semantic import SemanticLayer
 
 def test_lexical_reranker_prefers_title_matches():
     cands = [
-        Candidate("a", "Table dim_product", "product master with category and family"),
-        Candidate("b", "Definition: gross margin", "gross margin is revenue minus cost"),
-        Candidate("c", "Definition: revenue", "sum of net amount"),
+        Candidate("a", "Table dim_product", "product master with category and group"),
+        Candidate("b", "Definition: freight ratio", "freight as a share of revenue"),
+        Candidate("c", "Definition: revenue", "sum of item prices"),
     ]
-    out = LexicalReranker().rerank("gross margin by product category", cands, keep=2)
+    out = LexicalReranker().rerank("freight ratio by product category", cands, keep=2)
     assert [r.id for r in out] == ["b", "a"]
     assert out[0].before == 2 and out[0].after == 1
 
@@ -30,18 +30,16 @@ def test_make_reranker_falls_back_without_key():
 
 
 def test_retrieval_trace_records_rerank_positions(copilot):
-    r = copilot.ask("gross margin % by product category FY26")
+    copilot.cache.clear()
+    r = copilot.ask("freight ratio by category group 2018")
     hits = r["retrieval"]["hits"]
     assert r["retrieval"]["reranker"] == "lexical"
     ids = [h["id"] for h in hits]
     # structured hits and base table docs are pinned, the rest carry rerank positions
-    assert ids[:2] == ["m:gross_margin_pct", "d:product_category"]
-    assert "g:table-fact-orders" in ids and "g:table-dim-date" in ids
-    assert all(
-        h["rerank"]
-        for h in hits
-        if not h["structured"] and not h["id"].startswith("g:table-fact") and not h["id"].startswith("g:table-dim-date")
-    )
+    assert set(ids[:2]) == {"m:freight_ratio", "d:category_group"}
+    assert "g:table-fact-order-items" in ids and "g:table-dim-date" in ids
+    pinned = {"g:table-fact-orders", "g:table-fact-order-items", "g:table-dim-date"}
+    assert all(h["rerank"] for h in hits if not h["structured"] and h["id"] not in pinned)
 
 
 def test_milvus_lite_store_matches_memory_store():
@@ -51,5 +49,5 @@ def test_milvus_lite_store_matches_memory_store():
     mem = Retriever(semantic, Settings(vector_backend="memory"))
     mil = Retriever(semantic, Settings(vector_backend="milvus", milvus_uri=f"{d}/m.db"))
     assert mil.backend == "milvus"
-    q = "cancellation rate by channel"
+    q = "cancellation rate by payment type"
     assert [h.chunk.id for h in mem.search(q)][:4] == [h.chunk.id for h in mil.search(q)][:4]

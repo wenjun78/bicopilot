@@ -22,14 +22,14 @@ def test_unreachable_redis_falls_back_to_memory():
 
 def test_second_ask_is_served_from_cache(copilot):
     copilot.cache.clear()
-    first = copilot.ask("orders by channel FY2026")
-    second = copilot.ask("orders by channel FY2026")
+    first = copilot.ask("orders by payment type 2017")
+    second = copilot.ask("orders by payment type 2017")
     assert first["cached"] is False and second["cached"] is True
     assert second["rows"] == first["rows"] and second["id"] != first["id"]
-    assert copilot.ask("what was the margin in EMEA")["cached"] is False  # clarifications are never cached
+    assert copilot.ask("what is the delivery performance")["cached"] is False  # clarifications are never cached
 
 
 def test_guard_transpiles_to_other_dialects():
-    sql = "SELECT c.region, SUM(o.net_amount) AS revenue FROM fact_orders o JOIN dim_customer c ON o.customer_id = c.customer_id GROUP BY c.region"
+    sql = "SELECT c.region, SUM(o.product_value) AS revenue FROM fact_orders o JOIN dim_customer c ON o.customer_key = c.customer_key GROUP BY c.region"
     assert "LIMIT 500" in guard(sql, "mysql", 500).sql
     assert "TOP 500" in guard(sql, "mssql", 500).sql

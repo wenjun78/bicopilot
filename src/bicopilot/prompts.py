@@ -9,7 +9,7 @@ Classify the latest message:
 - data_question: asks for numbers, rankings, trends, comparisons or breakdowns from the warehouse
 - clarification_reply: a short answer to a clarifying question the copilot just asked (option name, "the first one", "percentage")
 - greeting: hello/thanks/small talk
-- meta: asks what the copilot can do, which metrics exist, how something is defined
+- meta: asks what the copilot can do, which metrics exist, how something is defined, or about the warehouse itself (which table/column holds something, what a column means)
 - out_of_scope: anything the warehouse cannot answer (weather, code, general knowledge, writing tasks)"""
 
 PLANNER_SYSTEM = """You are the PLANNER agent of a BI copilot (Plan-and-Execute pattern).
@@ -21,7 +21,7 @@ A resolver already proposed a draft plan from alias matching; correct it where t
 BUSINESS RULES
 {rules}
 
-As-of date: {as_of} (fiscal year {fy}, fiscal quarter {fq}).
+As-of date: {as_of} (period year {fy}, quarter {fq}).
 
 Rules for the plan:
 - Use metric ids and dimension ids exactly as listed. Never invent one. If the question needs something not in the catalog, set unsupported_reason.
@@ -47,7 +47,7 @@ something the compiler cannot express (period comparison, attainment vs targets,
 Draft notes: {draft_notes}
 
 Hard requirements:
-- Only the listed tables. Table aliases: fact_orders o, dim_date d, dim_customer c, dim_product p, dim_sales_rep r, fact_targets t.
+- Only the listed tables. Table aliases: {aliases}.
 - Metric expressions must match the definitions above exactly (including the status filter).
 - Group by every non-aggregated column. Alias output columns with the metric/dimension ids (snake_case).
 - Use dim_date columns for any time grouping or filtering; never date functions.

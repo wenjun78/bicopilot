@@ -26,6 +26,15 @@ def build_planner(rt: Runtime):
             question = f"{state['pending_question']} ({state['question']})"
         as_of = date.fromisoformat(state["as_of"])
         res = rt.semantic.resolve(question, as_of)
+        if state.get("attachment_text") and not res.metrics:
+            # a pasted KPI card or table often names the metric the question only points at ("how did this do")
+            extra = rt.semantic.resolve(state["attachment_text"][:1500], as_of)
+            res.metrics = extra.metrics[:1]
+            for f in extra.filters:
+                if f.dimension not in {x.dimension for x in res.filters}:
+                    res.filters.append(f)
+            if res.time is None:
+                res.time = extra.time
         draft = rt.semantic.plan_from_resolution(res)
         if state.get("intent") == "clarification_reply" and draft.needs_clarification:
             # the reply itself may name the metric; try to pin it from the reply text
@@ -52,6 +61,10 @@ def build_planner(rt: Runtime):
             catalog=rt.semantic.catalog_text(), rules=rt.semantic.rules_text(), as_of=as_of, fy=fy, fq=fq
         )
         user = f"QUESTION: {state['question']}\n\nDRAFT PLAN (from alias resolver):\n{draft.model_dump_json(indent=2)}"
+        if state.get("attachment_text"):
+            user += f"\n\nATTACHED CONTEXT (from a pasted file; use it to fill in metrics, periods, categories or filters the question refers to):\n{state['attachment_text'][:3000]}"
+        if state.get("policy_note"):
+            user += f"\n\n{state['policy_note']}"
         if isinstance(rt.llm, FakeLLM):
             final = draft
         else:
@@ -64,7 +77,7 @@ def build_planner(rt: Runtime):
         if not final.metrics and not final.needs_clarification:
             final.needs_clarification = True
             final.clarification = "Which metric should I use?"
-            final.options = ["Revenue", "Orders", "Units sold", "Gross margin %"]
+            final.options = [rt.semantic.metrics[m]["label"] for m in list(rt.semantic.metrics)[:4]]
         return {
             "plan": final.model_dump(),
             "awaiting_clarification": final.needs_clarification,

@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// VITE_BASE lets the same build live at / (served by FastAPI) or at /bicopilot/ (GitHub Pages).
+// VITE_BASE lets the same build live at / (served by FastAPI) or at /bi-copilot/ (GitHub Pages).
 export default defineConfig({
   plugins: [react()],
   base: process.env.VITE_BASE || "/",

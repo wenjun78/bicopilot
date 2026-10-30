@@ -21,7 +21,17 @@ from .config import ROOT, Settings
 
 CSV_DIR = ROOT / "data" / "csv"
 SCHEMA_SQL = ROOT / "data" / "schema.sql"
-TABLE_ORDER = ["dim_date", "dim_customer", "dim_product", "dim_sales_rep", "fact_orders", "fact_targets"]
+TABLE_ORDER = [
+    "dim_date",
+    "dim_customer",
+    "dim_seller",
+    "dim_product",
+    "dim_geo",
+    "fact_orders",
+    "fact_order_items",
+    "fact_payments",
+    "fact_reviews",
+]
 
 
 class QueryError(Exception):
@@ -57,7 +67,8 @@ def make_engine(settings: Settings) -> Engine:
 
 
 def init_schema(engine: Engine) -> None:
-    statements = [s.strip() for s in SCHEMA_SQL.read_text(encoding="utf-8").split(";") if s.strip()]
+    raw = "\n".join(line.split("--", 1)[0] for line in SCHEMA_SQL.read_text(encoding="utf-8").splitlines())
+    statements = [s.strip() for s in raw.split(";") if s.strip()]
     with engine.begin() as conn:
         for stmt in statements:
             conn.execute(text(stmt))
@@ -69,7 +80,7 @@ def load_csvs(engine: Engine, csv_dir: Path = CSV_DIR, replace: bool = True) -> 
         for table in TABLE_ORDER:
             path = csv_dir / f"{table}.csv"
             if not path.exists():
-                raise FileNotFoundError(f"{path} missing - run `python data/generate.py` first")
+                raise FileNotFoundError(f"{path} missing - run `python data/build_olist.py` first")
             with path.open(encoding="utf-8") as f:
                 rows = [{k: _coerce(v) for k, v in r.items()} for r in csv.DictReader(f)]
             if replace:
@@ -93,7 +104,7 @@ def warehouse_ready(engine: Engine) -> bool:
 
 def max_order_date(engine: Engine) -> str:
     with engine.connect() as conn:
-        value = conn.execute(text("SELECT MAX(order_date) FROM fact_orders")).scalar_one()
+        value = conn.execute(text("SELECT MAX(purchase_date) FROM fact_orders")).scalar_one()
     return str(value)[:10]
 
 

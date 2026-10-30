@@ -66,12 +66,17 @@ def build_sql_agent(rt: Runtime):
             error_block += f"\nTOOL OBSERVATIONS\n{observed}\n"
         if state.get("explored_sql"):
             error_block += f"\nYOUR DRAFT AFTER EXPLORATION\n{state['explored_sql']}\n"
+        if state.get("policy_note"):
+            error_block += f"\n{state['policy_note']}\n"
+        if state.get("attachment_text"):
+            error_block += f"\nATTACHED CONTEXT\n{state['attachment_text'][:2000]}\n"
         system = SQL_SYSTEM.format(
             context=format_context(state.get("context_chunks", [])),
             rules=rt.semantic.rules_text(),
             draft_sql=draft_sql or "-- compiler could not produce a draft",
             draft_notes="; ".join(draft_notes) or "none",
             max_rows=rt.settings.max_rows,
+            aliases=rt.semantic.aliases_text(),
             error_block=error_block,
         )
         user = f"QUESTION: {state['question']}\nAS-OF: {state['as_of']}\nPLAN:\n{plan.model_dump_json(indent=2)}"
@@ -99,9 +104,16 @@ def build_sql_agent(rt: Runtime):
                 "exec_error": f"guard: {exc}",
                 "trace": trace_event(state, "sql.guard", started, rejected=str(exc)),
             }
+        final_sql, masked = result.sql, []
+        if state.get("role") == "viewer":
+            from ..access import Policy, rewrite_sql
+
+            policy = Policy(role="viewer", masked=getattr(rt, "masked_columns", set()) or set())
+            if policy.active:
+                final_sql, masked = rewrite_sql(result.sql, policy, dialect)
         return {
-            "sql": result.sql,
-            "guard_warnings": result.warnings,
+            "sql": final_sql,
+            "guard_warnings": result.warnings + ([f"masked: {', '.join(masked)}"] if masked else []),
             "exec_error": "",
             "trace": trace_event(
                 state, "sql.guard", started, tables=sorted(result.tables), added_limit=result.added_limit

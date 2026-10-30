@@ -1,212 +1,317 @@
-# Semantic layer: the single source of truth for "what does revenue mean here".
-# The agents never guess a metric definition; they resolve it from this file.
-# Edit this file, not the prompts, when the business changes a definition.
+# Semantic layer for the Olist e-commerce warehouse (Brazil, Sep 2016 - Aug 2018, BRL).
+# The single source of truth for what every metric means. Agents resolve language to these ids; the
+# compiler emits these expressions; prompts quote these rules. Edit this file, not the prompts.
 
-version: 1
-currency: USD
-fiscal_year_start_month: 4          # FY2026 = 1 Apr 2025 .. 31 Mar 2026
-grain: order line                   # one row of fact_orders = one order line
+version: 2
+dataset: Olist Brazilian E-Commerce (Kaggle, CC BY-NC-SA 4.0)
+currency: BRL
+calendar: calendar              # calendar years and quarters; no fiscal offset
+as_of_default: "2018-08-31"     # last complete month in the data; relative time resolves against this
+grain: order line (fact_order_items) or order (fact_orders), chosen per metric
+
+# Base tables a metric can aggregate over, with the alias the SQL uses and how each dimension table joins in.
+bases:
+  fact_order_items:
+    alias: oi
+    date_column: oi.purchase_date
+    joins:
+      dim_date: "JOIN dim_date d ON oi.purchase_date = d.date_key"
+      dim_customer: "JOIN dim_customer c ON oi.customer_key = c.customer_key"
+      dim_product: "JOIN dim_product p ON oi.product_key = p.product_key"
+      dim_seller: "JOIN dim_seller s ON oi.seller_key = s.seller_key"
+      fact_orders: "JOIN fact_orders o ON oi.order_id = o.order_id"
+  fact_orders:
+    alias: o
+    date_column: o.purchase_date
+    joins:
+      dim_date: "JOIN dim_date d ON o.purchase_date = d.date_key"
+      dim_customer: "JOIN dim_customer c ON o.customer_key = c.customer_key"
 
 tables:
   fact_orders:
-    alias: o
-    description: One row per order line. Status completed/cancelled/returned. Amounts in USD.
-    date_column: order_date
-  dim_date:
-    alias: d
-    description: Calendar with fiscal year/quarter (FY starts April). Join on fact_orders.order_date = dim_date.date_key.
-    join: "JOIN dim_date d ON o.order_date = d.date_key"
+    description: One row per order (99,441). Status lifecycle, timestamps, delivery outcome, totals, main payment type, latest review score.
+  fact_order_items:
+    description: One row per item line (112,650) with price and freight in BRL; links product, seller and the order's customer.
+  fact_payments:
+    description: One row per payment record (103,886); an order can be paid with several records (e.g. voucher + card).
+  fact_reviews:
+    description: One row per review (99,224); 547 orders carry more than one review, fact_orders keeps the latest score.
   dim_customer:
-    alias: c
-    description: Customer master - segment, industry, country, region, tier, active flag.
-    join: "JOIN dim_customer c ON o.customer_id = c.customer_id"
+    description: Golden customer record, one row per person (96,096) merged from 99,441 per-order IDs; state, city, region, order count, repeat flag.
+  dim_seller:
+    description: Sellers (3,095) with state, city and region.
   dim_product:
-    alias: p
-    description: Product master - category, family, list price, unit cost.
-    join: "JOIN dim_product p ON o.product_id = p.product_id"
-  dim_sales_rep:
-    alias: r
-    description: Sales representatives with region and team.
-    join: "JOIN dim_sales_rep r ON o.sales_rep_id = r.sales_rep_id"
-  fact_targets:
-    alias: t
-    description: Revenue target per region per fiscal quarter.
+    description: Products (32,951) with English category, coarse category group and physical attributes.
+  dim_date:
+    description: Calendar from 2016-09-04 with year, quarter, month, year_month, year_quarter, weekend flag.
+  dim_geo:
+    description: One row per zip prefix (19,010) with mean coordinates; collapsed from 1M raw geolocation points.
 
-# Calibers (口径): business rules every query must respect. Injected into every SQL prompt.
+# Calibers: business rules every query must respect. Injected into every SQL prompt.
 rules:
-  - id: completed_only
-    text: Revenue, margin, units and order counts include ONLY status = 'completed'. Cancelled and returned orders are excluded unless the question is about cancellations or returns.
-  - id: fiscal_calendar
-    text: 'The fiscal year starts 1 April. "FY2026" or "FY26" means 1 Apr 2025 to 31 Mar 2026. "Q1" without "calendar" means fiscal Q1 (Apr-Jun). Use dim_date.fiscal_year / fiscal_quarter / fiscal_period for any time grouping.' 
+  - id: delivered_scope
+    text: 'Revenue (GMV), freight, items, average order value and basket size count DELIVERED orders only (status = ''delivered''). Orders, customers and cancellations use the scope their definition states.'
   - id: currency
-    text: All amounts are USD. Do not convert.
-  - id: region_source
-    text: '"Region" means the customer''s region (dim_customer.region), not the sales rep''s region, unless the question is about reps or teams.' 
+    text: All amounts are BRL (Brazilian real). Do not convert.
+  - id: calendar
+    text: 'Years and quarters are calendar periods. "Q1 2018" is Jan-Mar 2018. Use dim_date columns (year, quarter, year_month, year_quarter) for any time grouping; never date functions.'
   - id: relative_time
-    text: '"Last quarter" means the last COMPLETE fiscal quarter before the as-of date; "this year" means the current fiscal year as of the as-of date.' 
+    text: 'The as-of date is 2018-08-31 (last complete month). "Last month" = 2018-07, "last quarter" = 2018-Q2, "this year" = 2018 to date. Data after August 2018 is a partial tail and is excluded by the as-of date.'
+  - id: customer_identity
+    text: '"Customers" means distinct people (dim_customer.customer_key, the golden record), never the per-order customer_id of the raw data. "Repeat customers" have more than one order.'
+  - id: location
+    text: '"State" and "region" mean the customer''s location unless the question is about sellers; then use dim_seller. Region is the Brazilian macro-region (Southeast, South, Northeast, North, Center-West).'
+  - id: review_scope
+    text: Review score is the latest review per order (fact_orders.review_score); 768 orders have no review and are excluded from averages.
   - id: top_n_default
-    text: '"Top customers / products" without a number means top 10, ordered by the metric descending.' 
+    text: '"Top" without a number means top 10, ordered by the metric descending.'
 
 metrics:
   revenue:
-    label: Revenue
-    sql: "SUM(o.net_amount)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    label: Revenue (GMV)
+    base: fact_order_items
+    sql: "SUM(oi.price)"
+    filters: ["oi.status = 'delivered'"]
     format: currency
-    aliases: [sales, net sales, net revenue, turnover, bookings, income, total sales, revenue amount]
-    description: Net amount of completed order lines (after discount), USD.
-  gross_margin:
-    label: Gross margin (USD)
-    sql: "SUM(o.net_amount - o.cost_amount)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    aliases: [gmv, sales, net sales, turnover, merchandise value, product revenue, total sales, income, revenue amount]
+    description: Sum of item prices on delivered orders, BRL, excluding freight.
+  freight:
+    label: Freight revenue
+    base: fact_order_items
+    sql: "SUM(oi.freight_value)"
+    filters: ["oi.status = 'delivered'"]
     format: currency
-    aliases: [margin amount, gross profit, profit, gm]
-    description: Revenue minus cost of completed order lines, USD.
-  gross_margin_pct:
-    label: Gross margin %
-    sql: "SUM(o.net_amount - o.cost_amount) * 100.0 / NULLIF(SUM(o.net_amount), 0)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    aliases: [shipping revenue, freight value, shipping cost, delivery fees, freight charges]
+    description: Sum of freight charged on delivered order lines, BRL.
+  freight_ratio:
+    bad_is_high: true
+    label: Freight ratio %
+    base: fact_order_items
+    sql: "SUM(oi.freight_value) * 100.0 / NULLIF(SUM(oi.price), 0)"
+    filters: ["oi.status = 'delivered'"]
     format: percent
-    aliases: [margin %, margin percent, margin rate, gm%, gross margin percentage, profitability]
-    description: Gross margin as a percentage of revenue.
-  units_sold:
-    label: Units sold
-    sql: "SUM(o.quantity)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    aliases: [freight share, shipping ratio, freight percentage, freight as share of revenue, freight pct]
+    description: Freight as a percentage of product revenue on delivered lines.
+  items_sold:
+    label: Items sold
+    base: fact_order_items
+    sql: "COUNT(*)"
+    filters: ["oi.status = 'delivered'"]
     format: integer
-    aliases: [units, volume, quantity sold, pieces]
-    description: Quantity on completed order lines.
+    aliases: [units, units sold, quantity, pieces, item lines, volume, items]
+    description: Item lines on delivered orders.
   order_count:
     label: Orders
+    base: fact_orders
     sql: "COUNT(DISTINCT o.order_id)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    filters: ["o.status = 'delivered'"]
     format: integer
-    aliases: [number of orders, orders, order volume, how many orders, deals]
-    description: Count of completed orders.
+    aliases: [number of orders, orders, order volume, how many orders, delivered orders, purchases]
+    description: Delivered orders.
+  all_orders:
+    label: Orders placed (any status)
+    base: fact_orders
+    sql: "COUNT(DISTINCT o.order_id)"
+    filters: []
+    format: integer
+    aliases: [orders placed, total orders placed, all orders, orders any status, placed orders]
+    description: Orders in any status.
   avg_order_value:
     label: Average order value
-    sql: "SUM(o.net_amount) / NULLIF(COUNT(DISTINCT o.order_id), 0)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    base: fact_orders
+    sql: "AVG(o.product_value)"
+    filters: ["o.status = 'delivered'"]
     format: currency
-    aliases: [aov, average deal size, mean order value, average order size]
-    description: Revenue divided by completed orders.
-  active_customers:
-    label: Active customers
-    sql: "COUNT(DISTINCT o.customer_id)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    aliases: [aov, average basket value, mean order value, average ticket, ticket size, average order size]
+    description: Mean product value per delivered order, BRL (freight excluded).
+  basket_size:
+    label: Items per order
+    base: fact_orders
+    sql: "AVG(o.item_count)"
+    filters: ["o.status = 'delivered'"]
+    format: number
+    aliases: [basket size, average items per order, items per basket, lines per order]
+    description: Mean item lines per delivered order.
+  customers:
+    label: Customers
+    base: fact_orders
+    sql: "COUNT(DISTINCT o.customer_key)"
+    filters: ["o.status = 'delivered'"]
     format: integer
-    aliases: [buying customers, customers with orders, customer count, number of customers]
-    description: Distinct customers with at least one completed order in the period.
-  avg_discount_pct:
-    label: Average discount %
-    sql: "AVG(o.discount_pct)"
-    base_table: fact_orders
-    filters: ["o.status = 'completed'"]
+    aliases: [buyers, distinct customers, customer count, number of customers, unique customers, active customers, buying customers]
+    description: Distinct people (golden records) with a delivered order in the period.
+  repeat_customer_rate:
+    label: Repeat customer rate %
+    base: fact_orders
+    sql: "COUNT(DISTINCT CASE WHEN c.is_repeat = 1 THEN o.customer_key END) * 100.0 / NULLIF(COUNT(DISTINCT o.customer_key), 0)"
+    filters: ["o.status = 'delivered'"]
+    requires: [dim_customer]
     format: percent
-    aliases: [discount rate, average discount, discounting]
-    description: Mean discount percentage on completed order lines.
+    aliases: [repeat rate, returning customer rate, share of repeat buyers, repeat buyers %, loyalty rate]
+    description: Share of buying customers who have more than one order overall.
+  sellers:
+    label: Active sellers
+    base: fact_order_items
+    sql: "COUNT(DISTINCT oi.seller_key)"
+    filters: ["oi.status = 'delivered'"]
+    format: integer
+    aliases: [seller count, number of sellers, distinct sellers, active sellers, merchants, vendors]
+    description: Distinct sellers with a delivered item in the period.
+  avg_review_score:
+    label: Average review score
+    base: fact_orders
+    sql: "AVG(o.review_score)"
+    filters: ["o.review_score IS NOT NULL"]
+    format: number
+    aliases: [review score, rating, average rating, customer rating, nps, mean review, review, average review score, mean rating]
+    description: Mean of the latest review score (1-5) per reviewed order.
+  low_review_rate:
+    bad_is_high: true
+    label: Low review rate %
+    base: fact_orders
+    sql: "SUM(CASE WHEN o.review_score <= 2 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(o.review_score), 0)"
+    filters: ["o.review_score IS NOT NULL"]
+    format: percent
+    aliases: [bad review rate, negative review rate, share of 1-2 star reviews, unhappy customers, complaint rate, detractor rate]
+    description: Share of reviewed orders scored 1 or 2.
+  on_time_delivery_rate:
+    label: On-time delivery %
+    base: fact_orders
+    sql: "SUM(CASE WHEN o.delivered_late = 0 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(o.delivered_late), 0)"
+    filters: ["o.status = 'delivered'", "o.delivered_late IS NOT NULL"]
+    format: percent
+    aliases: [on time rate, on-time rate, on-time delivery rate, on time delivery rate, on-time delivery, delivery punctuality, on time delivery, delivered on time, otd, punctuality]
+    description: Share of delivered orders that arrived on or before the estimated date.
+  late_delivery_rate:
+    bad_is_high: true
+    label: Late delivery %
+    base: fact_orders
+    sql: "SUM(CASE WHEN o.delivered_late = 1 THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(o.delivered_late), 0)"
+    filters: ["o.status = 'delivered'", "o.delivered_late IS NOT NULL"]
+    format: percent
+    aliases: [late rate, late deliveries, delivered late, delay rate, share of late orders, lateness]
+    description: Share of delivered orders that arrived after the estimated date.
+  avg_delivery_days:
+    bad_is_high: true
+    label: Average delivery days
+    base: fact_orders
+    sql: "AVG(o.delivery_days)"
+    filters: ["o.status = 'delivered'", "o.delivery_days IS NOT NULL"]
+    format: number
+    aliases: [delivery time, delivery days, lead time, days to deliver, average delivery time, shipping time, delivery duration]
+    description: Mean days from purchase to delivery for delivered orders.
   cancellation_rate:
+    bad_is_high: true
     label: Cancellation rate %
-    sql: "SUM(CASE WHEN o.status = 'cancelled' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)"
-    base_table: fact_orders
+    base: fact_orders
+    sql: "SUM(CASE WHEN o.status = 'canceled' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)"
     filters: []
     format: percent
-    aliases: [cancel rate, cancellations, cancelled %, cancelled orders rate]
-    description: Share of all order lines (any status) that were cancelled.
-  return_rate:
-    label: Return rate %
-    sql: "SUM(CASE WHEN o.status = 'returned' THEN 1 ELSE 0 END) * 100.0 / NULLIF(COUNT(*), 0)"
-    base_table: fact_orders
-    filters: []
-    format: percent
-    aliases: [returns, returned %, return percentage]
-    description: Share of all order lines that were returned.
+    aliases: [cancel rate, cancellations, cancelled %, canceled orders rate, cancelled orders, cancellation]
+    description: Share of all orders placed that were canceled.
+  avg_installments:
+    label: Average installments
+    base: fact_orders
+    sql: "AVG(o.installments)"
+    filters: ["o.installments IS NOT NULL"]
+    format: number
+    aliases: [installments, payment installments, mean installments, instalments, financing length]
+    description: Mean number of payment installments per order.
+  payment_value:
+    label: Payment value
+    base: fact_orders
+    sql: "SUM(o.payment_value)"
+    filters: ["o.status = 'delivered'"]
+    format: currency
+    aliases: [amount paid, total paid, payments, collected, payment total, cash collected]
+    description: Sum of payments on delivered orders, BRL (product value + freight, after vouchers).
 
 dimensions:
+  state:
+    column: c.customer_state
+    table: dim_customer
+    aliases: [customer state, states, uf, province]
+    values: [SP, RJ, MG, RS, PR, SC, BA, DF, ES, GO, PE, CE, PA, MT, MA, MS, PB, PI, RN, AL, SE, TO, RO, AM, AC, AP, RR]
   region:
     column: c.region
     table: dim_customer
-    aliases: [geo, market, territory, geography, area]
-    values: [APAC, EMEA, NA, LATAM]
-  country:
-    column: c.country
+    aliases: [customer region, regions, macro-region, macro region, geo, area]
+    values: [Southeast, South, Northeast, North, Center-West]
+  city:
+    column: c.customer_city
     table: dim_customer
-    aliases: [nation, market country]
-  segment:
-    column: c.segment
+    aliases: [customer city, cities, town]
+  customer_type:
+    column: "CASE WHEN c.is_repeat = 1 THEN 'repeat' ELSE 'one-time' END"
     table: dim_customer
-    aliases: [customer segment, customer type, sector]
-    values: [Enterprise, SMB, "Public Sector", Education]
-  industry:
-    column: c.industry
-    table: dim_customer
-    aliases: [vertical, industry vertical]
-  tier:
-    column: c.tier
-    table: dim_customer
-    aliases: [customer tier, account tier]
-    values: [Gold, Silver, Bronze]
-  customer:
-    column: c.customer_name
-    table: dim_customer
-    aliases: [customer name, account, client, accounts, clients, customers]
-  product_category:
+    aliases: [repeat vs new, customer loyalty, new vs returning, one-time vs repeat, loyalty segment, repeat or new, customer type]
+    values: [repeat, one-time]
+  category:
     column: p.category
     table: dim_product
-    aliases: [category, product line, product type, line of business, lob]
-    values: [Laptop, Desktop, Server, Service, Accessory]
-  product_family:
-    column: p.family
+    aliases: [product category, categories, product type, product line]
+  category_group:
+    column: p.category_group
     table: dim_product
-    aliases: [family, product family, series]
+    aliases: [category group, product group, department, product family, line of business, lob]
+    values: ["Home & Furniture", "Beauty & Health", "Electronics", "Sports & Leisure", "Fashion", "Books & Stationery", "Baby & Pets", "Auto & Industry", "Food & Drink", "Other"]
   product:
-    column: p.product_name
+    column: p.product_id
     table: dim_product
-    aliases: [product name, sku, item, products, items]
-  channel:
-    column: o.channel
-    table: fact_orders
-    aliases: [sales channel, route to market, rtm]
-    values: [direct, partner, online]
+    aliases: [product id, sku, item, products, skus]
+  seller:
+    column: s.seller_id
+    table: dim_seller
+    aliases: [seller id, merchant, vendor, sellers, merchants, vendors]
+  seller_state:
+    column: s.seller_state
+    table: dim_seller
+    aliases: [seller location, seller states, vendor state, merchant state]
+  seller_region:
+    column: s.seller_region
+    table: dim_seller
+    aliases: [seller regions, vendor region, merchant region]
   status:
     column: o.status
     table: fact_orders
-    aliases: [order status]
-    values: [completed, cancelled, returned]
-  sales_rep:
-    column: r.rep_name
-    table: dim_sales_rep
-    aliases: [rep, representative, salesperson, seller, account manager]
-  team:
-    column: r.team
-    table: dim_sales_rep
-    aliases: [sales team]
-  fiscal_year:
-    column: d.fiscal_year
+    aliases: [order status, statuses, order state, fulfilment status]
+    values: [delivered, shipped, canceled, unavailable, invoiced, processing, created, approved]
+  payment_type:
+    column: o.payment_type
+    table: fact_orders
+    aliases: [payment method, payment, how customers pay, payment types, tender type]
+    values: [credit_card, boleto, voucher, debit_card]
+  review_score:
+    column: o.review_score
+    table: fact_orders
+    aliases: [score, star rating, stars, rating bucket, review stars]
+    values: ["1", "2", "3", "4", "5"]
+  year:
+    column: d.year
     table: dim_date
-    aliases: [fy, year, financial year]
+    aliases: [yearly, by year, per year, annual, calendar year]
     time: true
-  fiscal_quarter:
-    column: d.fiscal_period
+  quarter:
+    column: d.year_quarter
     table: dim_date
-    aliases: [quarter, fq, fiscal period, quarterly]
+    aliases: [quarterly, by quarter, per quarter, quarters]
     time: true
   month:
     column: d.year_month
     table: dim_date
-    aliases: [monthly, month by month, per month, year month]
+    aliases: [monthly, by month, per month, month by month, year month, months]
     time: true
+  weekday:
+    column: d.day_of_week
+    table: dim_date
+    aliases: [day of week, by weekday, weekdays, day of the week]
 
-# Resolver hints: a phrase that maps to more than one metric must trigger a clarifying question.
+# Phrases that map to more than one metric must trigger a clarifying question.
 ambiguous:
-  margin: [gross_margin, gross_margin_pct]
-  performance: [revenue, gross_margin_pct]
-  growth: [revenue, order_count, units_sold]
-  customers: [active_customers, customer]
+  performance: [revenue, avg_review_score, on_time_delivery_rate]
+  growth: [revenue, order_count, customers]
+  delivery: [avg_delivery_days, on_time_delivery_rate]
+  satisfaction: [avg_review_score, low_review_rate]
+  shipping: [freight, avg_delivery_days]
+  sellers: [sellers, seller]
+  customers: [customers, customer_type]

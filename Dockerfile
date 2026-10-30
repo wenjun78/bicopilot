@@ -15,10 +15,12 @@ COPY src ./src
 RUN pip install --no-cache-dir .
 COPY admin ./admin
 COPY semantic ./semantic
-COPY data/schema.sql data/generate.py ./data/
+COPY data/schema.sql data/build_olist.py ./data/
+COPY data/raw/olist.zip ./data/raw/olist.zip
 COPY eval ./eval
 COPY --from=web /web/dist ./web/dist
-RUN python data/generate.py && useradd --create-home --uid 10001 copilot && chown -R copilot /srv
+RUN pip install --no-cache-dir pandas && python data/build_olist.py && rm -rf data/raw/olist \
+    && useradd --create-home --uid 10001 copilot && chown -R copilot /srv
 USER copilot
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD python -c "import urllib.request,os; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\",\"8080\")}/healthz', timeout=4)"

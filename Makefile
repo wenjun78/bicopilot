@@ -1,7 +1,7 @@
 .PHONY: data demo test eval lint web docker report
 
-data:            ## regenerate the synthetic warehouse CSVs (deterministic)
-	python data/generate.py
+data:            ## build the Olist warehouse CSVs from data/raw/olist.zip
+	python data/build_olist.py
 
 demo: data       ## zero-infra demo: SQLite + in-memory vectors + deterministic compiler, UI at :8080 if built
 	python -m bicopilot

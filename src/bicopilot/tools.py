@@ -22,7 +22,7 @@ def build_tools(engine: Engine, max_rows: int):
 
     @tool
     def describe_table(table: str) -> str:
-        """Columns and types of one warehouse table (fact_orders, dim_date, dim_customer, dim_product, dim_sales_rep, fact_targets)."""
+        """Columns and types of one warehouse table (fact_orders, fact_order_items, fact_payments, fact_reviews, dim_customer, dim_seller, dim_product, dim_date, dim_geo)."""
         table = table.strip().lower()
         if table not in ALLOWED_TABLES:
             return f"error: unknown table {table}; allowed: {', '.join(sorted(ALLOWED_TABLES))}"

@@ -1,15 +1,19 @@
 # BI Copilot — Engineering Case Study
 
-> **Project type:** Portfolio implementation / synthetic-data intelligent BI prototype  
+> **Project type:** Portfolio implementation / intelligent BI over a real public e-commerce dataset (Olist, Kaggle)  
 > **Core stack:** Python, FastAPI, LangGraph, LangChain tool calling, SQLAlchemy, sqlglot, React, TypeScript, Vite, Recharts, Docker  
 > **Retrieval and data options:** BM25, embeddings, reciprocal rank fusion, reranking; SQLite or PostgreSQL; in-memory vectors, pgvector, or Milvus  
 > **Repository:** https://github.com/wenjun78/bicopilot  
 > **Live deployment supplied by the project owner:** https://bicopilot.onrender.com/  
 > **Related documentation:** [README](README.md) · [Business glossary](semantic/glossary.md) · [Metric definitions](semantic/metrics.yaml) · [Evaluation runner](eval/run.py)
 
+## The data
+
+[Olist's Brazilian E-Commerce dataset](https://www.kaggle.com/datasets/olistbr/brazilian-ecommerce) (Kaggle, CC BY-NC-SA 4.0): 99,441 orders, 112,650 item lines, 99,224 reviews, 103,886 payments, 32,951 products, 3,095 sellers and about one million geolocation points from September 2016 to August 2018, in BRL. `data/build_olist.py` builds a star schema (`fact_orders`, `fact_order_items`, `fact_payments`, `fact_reviews`, `dim_customer`, `dim_seller`, `dim_product`, `dim_date`, `dim_geo`) and resolves the master-data problems in the source: a golden customer record merges the per-order `customer_id` values into 96,096 people, duplicate reviews collapse to the latest, uncategorised products go to `unknown`, and geolocation is collapsed to one row per zip prefix. The semantic layer and the data dictionary are written against this schema; the deterministic evaluation runs 60 questions with hand-written gold SQL over it.
+
 ## 1. Executive summary
 
-BI Copilot converts natural-language questions about a **synthetic sales warehouse** into business-defined SQL, executes queries against a constrained set of warehouse tables, and returns an answer, chart specification, underlying rows, generated SQL, and a trace of agent activity.
+BI Copilot converts natural-language questions about a **real e-commerce warehouse** (Olist, 99k Brazilian orders, 2016-2018) into business-defined SQL, executes queries against a constrained set of warehouse tables, and returns an answer, chart specification, underlying rows, generated SQL, and a trace of agent activity.
 
 Its distinguishing design choice is the **governed semantic layer**: the meanings of revenue, gross margin, fiscal periods, and dimensions are defined in YAML rather than inferred afresh by a language model for every query. A deterministic SQL compiler provides a constrained starting point; an optional LLM path performs planning, tool use, SQL refinement, analysis, and critique. The service can also operate with a deterministic no-key substitute for development and automated testing.
 
@@ -20,8 +24,8 @@ Its distinguishing design choice is the **governed semantic layer**: the meaning
 Business users often need answers such as:
 
 - “Top five customers by gross margin last quarter.”
-- “Revenue by region FY2026.”
-- “Monthly revenue trend in APAC this year.”
+- “Revenue by region 2017.”
+- “Late delivery rate by region 2018.”
 - “What was the margin in EMEA?”
 
 A conventional BI workflow requires a knowledgeable analyst to translate these questions into the correct warehouse joins, filters, aggregations, and reporting periods. Allowing an LLM to write free-form SQL removes some manual effort but introduces a more serious risk: **SQL can run successfully and still answer the wrong business question**.
@@ -33,7 +37,7 @@ Concrete failure modes motivating this project:
 | Revenue | Cancelled or returned lines are counted | Completed order lines only, in USD |
 | Gross margin | Margin amount is confused with margin percentage | Ask a clarifying question for an ambiguous “margin” |
 | Revenue by region | Sales representative's region is used | Customer region unless the question explicitly refers to reps |
-| Last quarter | Calendar quarter is assumed | Last *complete fiscal quarter* relative to the warehouse's as-of date |
+| Last quarter | The current calendar quarter is assumed | Last *complete calendar quarter* relative to the warehouse's as-of date |
 | Average order value | Order lines are counted as separate orders | Revenue divided by distinct completed order IDs |
 | Top five customers | An unordered result or incorrect LIMIT is returned | Sort by requested metric and return five groups |
 
@@ -60,7 +64,7 @@ These examples are grounded in [``semantic/metrics.yaml``](semantic/metrics.yaml
 - Generated SQL results are compared with hand-authored reference queries in the evaluation harness.
 - The system distinguishes answers, clarification requests, refusals, and other statuses.
 - Failed optional-model execution can fall back to a clearly labelled deterministic path.
-- Evaluation and unit tests run in CI using reproducible synthetic input data.
+- Evaluation and unit tests run in CI against the Olist warehouse built from the committed source files.
 
 **Outside the demonstrated scope:** enterprise identity integration, per-user row-level authorization, real customer data, full A2A protocol compliance, guaranteed factual accuracy from an LLM, measured ROI, and proven scale under sustained production traffic.
 
@@ -138,7 +142,7 @@ gross_margin:
 
 This contract prevents the *deterministic compiler* from omitting the completed-order filter. **Important distinction:** a model-generated SQL statement is not independently proven to comply with every business definition merely because it passed the current SQL guard. The guard checks the SQL's structural restrictions; metric correctness is also evaluated against reference results.
 
-With the demonstration as-of date of **2026-09-28**, “last quarter” resolves to **FY2027 Q1 (April–June 2026)** under the April-start fiscal calendar. This is a property of the chosen as-of date; other datasets or dates may resolve differently.
+With the as-of date of **2018-08-31** (the last complete month in the data), “last quarter” resolves to **2018-Q2 (April–June 2018)** under the April-start fiscal calendar. This is a property of the chosen as-of date; other datasets or dates may resolve differently.
 
 ## 6. Technical concepts explained in this implementation
 
@@ -192,7 +196,7 @@ With the demonstration as-of date of **2026-09-28**, “last quarter” resolves
 
 **Why:** exact metric names and field IDs are better handled by lexical matching, whereas alternative phrasing may benefit from semantic similarity. Important structured results are pinned to context.
 
-**Trade-off:** more retrieval stages increase processing, configuration and debugging work. For the small synthetic glossary, an in-memory approach is simpler than running a dedicated vector service.
+**Trade-off:** more retrieval stages increase processing, configuration and debugging work. For the small glossary, an in-memory approach is simpler than running a dedicated vector service.
 
 ### C. Three specialist subgraphs rather than one unconstrained agent
 
@@ -269,7 +273,7 @@ Key paths: [``service.py``](src/bicopilot/service.py), [``limits.py``](src/bicop
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
-python data/generate.py
+python data/build_olist.py
 pytest -q
 python eval/run.py --min 0.9
 python -m bicopilot
@@ -284,7 +288,7 @@ The no-key path uses the deterministic model substitute unless real provider set
 - A question-to-answer workflow returns business-defined SQL, result data, visual output and a trace.
 - Ambiguous questions can trigger a clarification turn instead of a guessed metric.
 - A separate reporting client can request results over the implemented A2A surface and compile a Markdown briefing.
-- Tests and evaluation can be exercised against reproducible synthetic sales data without a model key.
+- Tests and evaluation can be exercised against the real Olist warehouse without a model key.
 
 **Intended business impact, not a measured outcome**
 
@@ -308,7 +312,7 @@ No measured user adoption, hours saved, financial return, customer satisfaction 
 | P2 | Extend A2A compliance and exercise independent agent clients | Validate interoperability beyond Agent Card + message/send |
 | P2 | Perform a controlled analyst/user study | Measure actual task completion, accuracy, time saved and usability |
 
-The repository's current synthetic dataset and narrow warehouse schema are intentionally manageable. Migrating to a real enterprise warehouse would require schema discovery, data classification, authorization, versioned business definitions, greater test diversity and ownership of data/metric changes.
+The repository's dataset is one company's two years of orders with a nine-table star schema, which is intentionally manageable. Migrating to a real enterprise warehouse would require schema discovery, data classification, authorization, versioned business definitions, greater test diversity and ownership of data/metric changes.
 
 ## 12. Interview preparation: answer the architecture, not just the tool list
 

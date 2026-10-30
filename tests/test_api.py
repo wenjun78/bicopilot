@@ -9,7 +9,7 @@ def test_healthz_and_catalog(client):
 
 
 def test_chat(client):
-    r = client.post("/chat", json={"question": "top 5 customers by revenue FY2026", "session_id": "t1"}).json()
+    r = client.post("/chat", json={"question": "top 5 categories by revenue 2017", "session_id": "t1"}).json()
     assert r["status"] == "answered" and r["row_count"] == 5 and r["sql"]
     auth = {"Authorization": "Bearer test-admin-token"}
     assert client.get("/runs").status_code == 401
@@ -34,7 +34,7 @@ def test_agent_card_and_a2a_message_send(client):
                 "kind": "message",
                 "role": "user",
                 "messageId": str(uuid.uuid4()),
-                "parts": [{"kind": "text", "text": "revenue by region FY2026"}],
+                "parts": [{"kind": "text", "text": "revenue by region 2017"}],
             }
         },
     }
@@ -42,7 +42,7 @@ def test_agent_card_and_a2a_message_send(client):
     task = body["result"]
     assert task["kind"] == "task" and task["status"]["state"] == "completed"
     data = next(p["data"] for p in task["artifacts"][0]["parts"] if p["kind"] == "data")
-    assert data["columns"] == ["region", "revenue"] and len(data["rows"]) == 4
+    assert data["columns"] == ["region", "revenue"] and len(data["rows"]) == 5
 
 
 def test_a2a_clarification_is_input_required(client):
@@ -55,7 +55,7 @@ def test_a2a_clarification_is_input_required(client):
                 "kind": "message",
                 "role": "user",
                 "messageId": "m",
-                "parts": [{"kind": "text", "text": "margin in EMEA"}],
+                "parts": [{"kind": "text", "text": "delivery performance by region"}],
             }
         },
     }

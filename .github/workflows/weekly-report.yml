@@ -21,7 +21,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: pip install -e .
-      - run: python data/generate.py
+      - run: python data/build_olist.py
       - name: Start the copilot API
         run: |
           HOST=127.0.0.1 PORT=8080 nohup python -m bicopilot > api.log 2>&1 &

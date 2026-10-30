@@ -22,7 +22,7 @@ from .rerank import Candidate, Reranker
 from .semantic import SemanticLayer
 
 RRF_K = 60
-ALWAYS = ("g:table-fact-orders", "g:table-dim-date")  # every query touches these
+ALWAYS = ("g:table-fact-orders", "g:table-fact-order-items", "g:table-dim-date")  # every query touches these
 _TOKEN = re.compile(r"[a-z0-9%]+")
 STOP = {"the", "a", "an", "of", "in", "by", "for", "and", "or", "to", "is", "are", "what", "which", "show", "me", "per"}
 
@@ -245,10 +245,13 @@ class Retriever:
         engine: Engine | None = None,
         embedder: Embedder | None = None,
         reranker: Reranker | None = None,
+        extra_chunks: list[tuple[str, str, str]] | None = None,
     ):
         self.semantic = semantic
         self.settings = settings
         self.chunks = build_chunks(semantic, settings.semantic_dir)
+        for cid, title, body in extra_chunks or []:
+            self.chunks.append(Chunk(id=cid, title=title, text=body, kind="dictionary"))
         self.by_id = {c.id: c for c in self.chunks}
         self.bm25 = BM25([tokenize(c.title + " " + c.text) for c in self.chunks])
         self.embedder = embedder or make_embedder(settings)

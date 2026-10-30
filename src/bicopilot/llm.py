@@ -169,6 +169,8 @@ class FakeLLM(LLM):
         return draft, steps
 
     def structured(self, task: str, schema: type[T], system: str, user: str, context: dict[str, Any]) -> T:
+        global CURRENCY
+        CURRENCY = str(self.semantic.spec.get("currency", "USD"))
         if schema is RouterOut:
             q = context["question"].lower().strip()
             if context.get("awaiting_clarification"):
@@ -177,7 +179,29 @@ class FakeLLM(LLM):
                 return RouterOut(intent="greeting")  # type: ignore[return-value]
             if any(w in q for w in ("weather", "joke", "poem", "capital of")):
                 return RouterOut(intent="out_of_scope")  # type: ignore[return-value]
-            if q.startswith(("what metrics", "which metrics", "what can you", "help")):
+            if q.startswith(
+                ("what metrics", "which metrics", "what can you", "help", "what tables", "which tables")
+            ) or any(
+                w in q
+                for w in (
+                    "which column",
+                    "what column",
+                    "which table",
+                    "what table",
+                    "what does the column",
+                    "data dictionary",
+                    "meaning of the column",
+                    "columns in",
+                    "fields in",
+                    "column tells",
+                    "column shows",
+                    "column has",
+                    "which field",
+                    "what field",
+                    "field has",
+                    "field holds",
+                )
+            ):
                 return RouterOut(intent="meta")  # type: ignore[return-value]
             return RouterOut(intent="data_question")  # type: ignore[return-value]
         if schema is Plan:
@@ -270,6 +294,9 @@ def _fake_analysis(context: dict[str, Any], fmt: str = "number") -> AnalysisOut:
     return AnalysisOut(summary=summary, insights=insights, chart=chart)
 
 
+CURRENCY = "USD"
+
+
 def _pct(v: Any) -> str:
     try:
         return f"{float(v):+.1f}%"
@@ -286,7 +313,7 @@ def _fmt(v: Any, fmt: str = "number") -> str:
         return f"{f:.1f}%"
     if fmt == "integer":
         return f"{f:,.0f}"
-    prefix = "USD " if fmt == "currency" else ""
+    prefix = f"{CURRENCY} " if fmt == "currency" else ""
     if abs(f) >= 1_000_000:
         return f"{prefix}{f / 1_000_000:.2f}M"
     if abs(f) >= 1_000:

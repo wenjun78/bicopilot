@@ -19,7 +19,7 @@ def settings(tmp_path_factory) -> Settings:
         embedding_provider="hash",
         vector_backend="pgvector" if url.startswith("postgresql") else "memory",
         cache_url=os.environ.get("TEST_CACHE_URL", "memory"),
-        as_of_date="2026-09-28",
+        as_of_date="2018-08-31",
         admin_token="test-admin-token",
     )
 

@@ -13,6 +13,7 @@ and swapped independently (multi-agent collaboration on one shared state).
 
 from __future__ import annotations
 
+import re
 import time
 
 from langgraph.graph import END, START, StateGraph
@@ -24,11 +25,131 @@ from .planner import build_planner
 from .sql_agent import build_sql_agent
 from .state import BIState, Runtime, trace_event
 
+SCHEMA_WORDS = (
+    "column",
+    "columns",
+    "table",
+    "tables",
+    "field",
+    "fields",
+    "schema",
+    "data dictionary",
+    "dictionary",
+    "what does",
+    "meaning of",
+    "defined",
+    "definition of",
+)
+
+
+def schema_answer(rt: Runtime, question: str) -> str:
+    """Answer a question about the warehouse itself from the structured data dictionary."""
+    d = rt.dictionary or {}
+    tables = d.get("tables", [])
+    q = question.lower()
+    if not tables:
+        return META_ANSWER
+    if re.search(r"\b(what|which|list|show)\b.*\btables?\b", q) and not re.search(r"\bcolumns?\b", q):
+        lines = [f"- {t['name']} ({t['row_count']:,} rows): {t['description']}" for t in tables]
+        return (
+            "The warehouse has these tables:\n"
+            + "\n".join(lines)
+            + "\n\nThe Dictionary tab shows every column with a profile."
+        )
+    q_tokens = {w.strip("?.,") for w in q.split()} - {
+        "the",
+        "a",
+        "an",
+        "of",
+        "is",
+        "what",
+        "which",
+        "does",
+        "do",
+        "me",
+        "tells",
+        "tell",
+        "column",
+        "columns",
+        "table",
+        "tables",
+        "mean",
+        "means",
+        "if",
+        "was",
+        "for",
+        "in",
+        "field",
+        "fields",
+        "has",
+        "shows",
+        "holds",
+        "to",
+        "how",
+        "know",
+        "order",
+        "orders",
+        "customer",
+        "customers",
+        "product",
+        "products",
+        "that",
+        "this",
+        "it",
+        "or",
+        "and",
+        "with",
+    }
+
+    def stem(w: str) -> str:
+        return w[:-1] if len(w) > 4 and w.endswith("s") else w
+
+    q_stems = {stem(t) for t in q_tokens if len(t) > 2}
+    scored: list[tuple[int, dict, dict]] = []
+    for t in tables:
+        for c in t["columns"]:
+            name_words = {stem(w) for w in c["name"].split("_")}
+            desc_words = {stem(w.strip("(),.;:")) for w in c["description"].lower().split()}
+            score = 0
+            for tok in q_stems:
+                if tok in name_words:
+                    score += 3
+                elif tok in desc_words:
+                    score += 1
+            if score and t["kind"] == "fact":
+                score += 1  # facts hold the measures people usually ask about
+            if score:
+                scored.append((score, t, c))
+    if not scored:
+        return META_ANSWER
+    scored.sort(key=lambda x: -x[0])
+    lines = []
+    for _score, t, c in scored[:3]:
+        extra = []
+        if c.get("joins_to"):
+            extra.append(f"joins to {c['joins_to']}")
+        if c.get("samples") and c["samples"][0].get("count") is not None:
+            extra.append("values: " + ", ".join(s["value"] for s in c["samples"][:6]))
+        if c.get("null_pct"):
+            extra.append(f"{c['null_pct']}% null")
+        if c.get("used_by"):
+            extra.append("used by " + ", ".join(u.split(":", 1)[1] for u in c["used_by"][:4]))
+        lines.append(
+            f"- {t['name']}.{c['name']} ({c['type']}): {c['description']}" + (f" [{'; '.join(extra)}]" if extra else "")
+        )
+    return (
+        "From the data dictionary:\n"
+        + "\n".join(lines)
+        + "\n\nThe Dictionary tab lists every table and column with profiles."
+    )
+
+
 META_ANSWER = (
-    "I answer questions about sales data: revenue, gross margin (USD or %), units, orders, average order value, "
-    "active customers, discounts, cancellation and return rates - by region, country, segment, industry, tier, "
-    "customer, product category/family/product, channel, sales rep or team, and by fiscal year, fiscal quarter or month. "
-    'Try: "revenue by region FY2026", "top 5 customers by gross margin last quarter", "monthly revenue trend in APAC".'
+    "I answer questions about the Olist e-commerce warehouse (Brazil, 2016-2018, BRL): revenue (GMV), freight, "
+    "orders, items, customers and repeat rate, average order value, review score, on-time and late delivery, delivery "
+    "days, cancellation rate, payment types and installments - by state, region, city, category, category group, "
+    "seller, payment type, status, and by year, quarter or month. "
+    'Try: "revenue by state 2017", "top 5 categories by revenue last quarter", "late delivery rate by region 2018".'
 )
 
 
@@ -80,7 +201,9 @@ def build_graph(rt: Runtime):
                 "trace": trace_event(state, "respond", started),
             }
         if intent == "meta":
-            return {"answer": META_ANSWER, "status": "meta", "trace": trace_event(state, "respond", started)}
+            q = state["question"].lower()
+            answer = schema_answer(rt, state["question"]) if any(w in q for w in SCHEMA_WORDS) else META_ANSWER
+            return {"answer": answer, "status": "meta", "trace": trace_event(state, "respond", started)}
         if intent == "out_of_scope":
             return {
                 "answer": "That is outside the sales warehouse I can query. I can answer questions about revenue, margin, orders, customers and products.",

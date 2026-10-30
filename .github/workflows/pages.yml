@@ -1,5 +1,5 @@
 # Deploys the React UI to GitHub Pages at https://<user>.github.io/bicopilot/
-# The UI talks to the API at VITE_API_URL (set it as a repository variable, e.g. https://bi-copilot.onrender.com).
+# The UI talks to the API at VITE_API_URL (set it as a repository variable, e.g. https://bicopilot.onrender.com).
 name: Pages
 
 on:

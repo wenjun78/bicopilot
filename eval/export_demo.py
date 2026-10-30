@@ -19,18 +19,18 @@ HERE = Path(__file__).resolve().parent
 OUT = ROOT / "web" / "public" / "demo" / "results.json"
 MAX_ROWS = 100
 SUGGESTIONS = [
-    "revenue by region FY2026",
-    "top 5 customers by gross margin last quarter",
-    "monthly revenue trend in APAC this year",
-    "gross margin % by product category FY26",
-    "revenue by region year over year FY2026",
-    "what was the margin in EMEA",
-    "orders this quarter vs last quarter",
-    "bottom 3 products by revenue FY26 Q2",
-    "average order value by segment calendar 2025",
-    "which customers bought the most units in Q4",
-    "cancellation rate by channel",
-    "active customers by quarter FY2026",
+    "revenue by state 2017",
+    "top 5 categories by revenue last quarter",
+    "late delivery rate by region 2018",
+    "average review score by category group",
+    "revenue by region year over year 2018",
+    "what is the delivery performance",
+    "monthly revenue trend in 2018",
+    "freight ratio by region",
+    "cancellation rate by payment type",
+    "top 10 cities by orders",
+    "repeat customer rate by region",
+    "which column tells me if an order was late",
 ]
 
 

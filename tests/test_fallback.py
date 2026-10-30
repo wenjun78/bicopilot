@@ -25,8 +25,8 @@ def test_model_failure_degrades_to_deterministic_answer(copilot, monkeypatch):
     )
     monkeypatch.setattr(copilot, "fallback_graph", build_graph(fallback_rt))
     copilot.cache.clear()
-    r = copilot.ask("revenue by segment FY2026")
-    assert r["status"] == "answered" and r["row_count"] == 4
+    r = copilot.ask("revenue by region 2017")
+    assert r["status"] == "answered" and r["row_count"] == 5
     assert r["llm"] == "fake (fallback)" and "simulated provider outage" in r["fallback_error"]
     assert "deterministic compiler answered" in r["answer"]
-    assert copilot.ask("revenue by segment FY2026")["cached"] is False  # degraded answers are not cached
+    assert copilot.ask("revenue by region 2017")["cached"] is False  # degraded answers are not cached

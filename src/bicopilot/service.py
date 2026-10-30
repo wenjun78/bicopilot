@@ -27,15 +27,19 @@ from sqlalchemy import (
     text,
 )
 
+from .access import ROLES, Policy, masked_from_dictionary, post_filter, rewrite_sql
 from .agents.graph import build_graph
 from .agents.state import Runtime
+from .attachments import context_block
 from .cache import cache_key, make_cache
 from .config import Settings
-from .db import init_schema, load_csvs, make_engine, max_order_date, warehouse_ready
+from .db import init_schema, load_csvs, make_engine, max_order_date, run_query, warehouse_ready
+from .dictionary import build_dictionary, dictionary_chunks
 from .llm import FakeLLM, make_llm
 from .rerank import make_reranker
 from .retrieval import Retriever
 from .semantic import SemanticLayer
+from .sqlguard import ALLOWED_TABLES, guard
 
 log = logging.getLogger("bicopilot")
 metadata = MetaData()
@@ -87,22 +91,40 @@ class Copilot:
         metadata.create_all(self.engine)
         _add_missing_columns(self.engine)
         self.semantic = SemanticLayer.load(self.settings.semantic_dir)
-        self.retriever = Retriever(self.semantic, self.settings, self.engine)
+        self.dictionary = build_dictionary(self.engine, self.semantic, ALLOWED_TABLES)
+        self.masked_columns = masked_from_dictionary(self.dictionary)
+        self.retriever = Retriever(
+            self.semantic, self.settings, self.engine, extra_chunks=dictionary_chunks(self.dictionary)
+        )
         self.llm = make_llm(self.settings, self.semantic)
         self.retriever.set_reranker(make_reranker(self.settings, self.llm))
-        self.runtime = Runtime(self.settings, self.semantic, self.retriever, self.llm, self.engine)
+        self.runtime = Runtime(
+            self.settings, self.semantic, self.retriever, self.llm, self.engine, self.dictionary, self.masked_columns
+        )
         self.graph = build_graph(self.runtime)
         # Deterministic stand-in used when the model path fails at runtime, so a provider outage or a
         # model/schema mismatch degrades to a labelled answer instead of an error page.
         self.fallback_graph = None
         if self.settings.llm_fallback_to_fake and self.llm.name != "fake":
-            fallback_rt = Runtime(self.settings, self.semantic, self.retriever, FakeLLM(self.semantic), self.engine)
+            fallback_rt = Runtime(
+                self.settings,
+                self.semantic,
+                self.retriever,
+                FakeLLM(self.semantic),
+                self.engine,
+                self.dictionary,
+                self.masked_columns,
+            )
             self.fallback_graph = build_graph(fallback_rt)
-        self.as_of = self.settings.as_of_date or max_order_date(self.engine)
+        self.as_of = self.settings.as_of_date or self.semantic.as_of_default or max_order_date(self.engine)
         self.cache = make_cache(self.settings.cache_url, self.settings.cache_ttl_s)
         self.semantic_version = hashlib.sha256((self.settings.semantic_dir / "metrics.yaml").read_bytes()).hexdigest()[
             :12
         ]
+
+    def policy(self, role: str) -> Policy:
+        role = role if role in ROLES else "analyst"
+        return Policy(role=role, masked=self.masked_columns if role == "viewer" else set())
 
     def ask(
         self,
@@ -111,10 +133,20 @@ class Copilot:
         pending_question: str = "",
         history: list[dict[str, str]] | None = None,
         session_id: str = "",
+        role: str = "analyst",
+        attachments: list[dict[str, Any]] | None = None,
+        retain_memory: bool = True,
     ) -> dict[str, Any]:
         started = time.perf_counter()
-        key = cache_key(question, pending_question or "", self.as_of, self.semantic_version)
-        cached = self.cache.get(key)
+        policy = self.policy(role)
+        attachment_text = context_block(attachments or [])
+        key = cache_key(
+            question + ("|att:" + hashlib.sha1(attachment_text.encode()).hexdigest()[:12] if attachment_text else ""),
+            pending_question or "",
+            self.as_of,
+            self.semantic_version + "|" + policy.role,
+        )
+        cached = self.cache.get(key) if not attachment_text else None
         if cached:
             cached = {
                 **cached,
@@ -127,8 +159,11 @@ class Copilot:
         state = {
             "question": question.strip(),
             "pending_question": pending_question or "",
-            "history": history or [],
+            "history": (history or []) if retain_memory else [],
             "as_of": self.as_of,
+            "attachment_text": attachment_text,
+            "policy_note": policy.prompt_note(),
+            "role": policy.role,
         }
         llm_name, fallback_error = self.llm.name, ""
         try:
@@ -145,10 +180,20 @@ class Copilot:
                     final.get("answer", "")
                     + "\n\nNote: the language model was unavailable for this question, so the deterministic compiler answered it."
                 )
+        masked_cols: list[str] = []
+        if policy.active and final.get("columns"):
+            final["rows"], masked_cols = post_filter(
+                list(final["columns"]), [list(r) for r in final.get("rows", [])], policy
+            )
         total_ms = int((time.perf_counter() - started) * 1000)
         run_id = str(uuid.uuid4())
         result = {
             "id": run_id,
+            "role": policy.role,
+            "masked_columns": masked_cols,
+            "attachments": [
+                {k: v for k, v in a.items() if k != "text"} | {"chars": a.get("chars", 0)} for a in (attachments or [])
+            ],
             "question": final.get("question", question),
             "intent": final.get("intent"),
             "status": final.get("status"),
@@ -177,9 +222,56 @@ class Copilot:
             "cached": False,
         }
         self._record(result, session_id)
-        if result["status"] == "answered" and not fallback_error:  # never cache a degraded answer
+        if (
+            result["status"] == "answered" and not fallback_error and not attachment_text
+        ):  # never cache a degraded answer
             self.cache.set(key, result)
         return result
+
+    def run_sql(self, sql: str, role: str = "analyst") -> dict[str, Any]:
+        """SQL console: guard -> role rewrite -> read-only execute -> post-filter. Same path the agents use."""
+        started = time.perf_counter()
+        policy = self.policy(role)
+        checked = guard(sql, target_dialect=self.engine.dialect.name, max_rows=self.settings.max_rows)
+        final_sql, rewritten = checked.sql, []
+        if policy.active:
+            final_sql, rewritten = rewrite_sql(checked.sql, policy, self.engine.dialect.name)
+        result = run_query(self.engine, final_sql, self.settings.max_rows, self.settings.query_timeout_s)
+        rows, masked = post_filter(result.columns, result.rows, policy)
+        return {
+            "id": str(uuid.uuid4()),
+            "sql": final_sql,
+            "columns": result.columns,
+            "rows": rows,
+            "row_count": result.row_count,
+            "truncated": result.truncated,
+            "elapsed_ms": result.elapsed_ms,
+            "warnings": checked.warnings + ([f"LIMIT {self.settings.max_rows} added"] if checked.added_limit else []),
+            "masked_columns": sorted(set(rewritten) | set(masked)),
+            "role": policy.role,
+            "total_ms": int((time.perf_counter() - started) * 1000),
+        }
+
+    def explain_sql(self, sql: str, columns: list[str], rows: list[list[Any]], role: str = "analyst") -> dict[str, Any]:
+        """Console 'Explain': the analyst agent interprets a result set the visitor produced by hand."""
+        from .agents.analyst import build_analyst
+        from .semantic import Plan
+
+        policy = self.policy(role)
+        agent = build_analyst(self.runtime)
+        state = {
+            "question": "Explain this result set",
+            "as_of": self.as_of,
+            "plan": Plan(metrics=[], dimensions=[]).model_dump(),
+            "sql": sql,
+            "columns": columns,
+            "rows": rows,
+            "row_count": len(rows),
+            "truncated": False,
+            "policy_note": policy.prompt_note(),
+        }
+        out = agent.invoke(state)
+        return {"analysis": out.get("analysis"), "critic": out.get("critic")}
 
     def _record(self, result: dict[str, Any], session_id: str) -> None:
         try:

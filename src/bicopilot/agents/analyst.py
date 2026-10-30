@@ -34,7 +34,7 @@ def build_analyst(rt: Runtime):
         out: AnalysisOut = rt.llm.structured(
             "analyze",
             AnalysisOut,
-            ANALYST_SYSTEM,
+            ANALYST_SYSTEM.format(currency=rt.semantic.spec.get("currency", "BRL")),
             user,
             {"plan": plan, "columns": columns, "rows": rows, "row_count": state.get("row_count", 0)},
         )

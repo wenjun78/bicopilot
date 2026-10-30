@@ -196,7 +196,7 @@ def build_graph(rt: Runtime):
         intent = state.get("intent", "")
         if intent == "greeting":
             return {
-                "answer": "Hi! Ask me about revenue, margin, orders or customers - by region, product, segment or fiscal period.",
+                "answer": "Hi! Ask me about revenue, freight, orders, customers, reviews or deliveries - by state, region, category, seller, payment type or period.",
                 "status": "greeting",
                 "trace": trace_event(state, "respond", started),
             }

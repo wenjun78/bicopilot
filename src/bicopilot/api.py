@@ -77,7 +77,6 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         if not settings.admin_token or not bearer_ok(request, settings.admin_token):
             raise HTTPException(401, "admin token required")
 
-
     @app.get("/admin", include_in_schema=False)
     def admin_page() -> FileResponse:
         if not settings.admin_token:

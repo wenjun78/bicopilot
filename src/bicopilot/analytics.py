@@ -102,11 +102,21 @@ class SiteAnalytics:
                 .group_by(r.c.status)
                 .order_by(func.count().desc())
             ).all()
-            latest = conn.execute(
-                select(visits.c.created_at, visits.c.visitor_hash, visits.c.session_id,
-                       visits.c.path, visits.c.referrer)
-                .order_by(visits.c.created_at.desc()).limit(25)
-            ).mappings().all()
+            latest = (
+                conn.execute(
+                    select(
+                        visits.c.created_at,
+                        visits.c.visitor_hash,
+                        visits.c.session_id,
+                        visits.c.path,
+                        visits.c.referrer,
+                    )
+                    .order_by(visits.c.created_at.desc())
+                    .limit(25)
+                )
+                .mappings()
+                .all()
+            )
 
         vdays = {str(day)[:10]: (int(n), int(uniq)) for day, n, uniq in visit_days}
         qdays = {str(day)[:10]: int(n) for day, n in question_days}
@@ -129,11 +139,14 @@ class SiteAnalytics:
             "daily": daily,
             "referrers": [{"name": label or "direct", "count": int(n)} for label, n in referrals],
             "statuses": [{"name": label or "unknown", "count": int(n)} for label, n in statuses],
-            "recent_visits": [{
-                "created_at": row["created_at"].isoformat() + "Z",
-                "visitor": row["visitor_hash"][:12],
-                "session_id": row["session_id"],
-                "path": row["path"],
-                "referrer": row["referrer"],
-            } for row in latest],
+            "recent_visits": [
+                {
+                    "created_at": row["created_at"].isoformat() + "Z",
+                    "visitor": row["visitor_hash"][:12],
+                    "session_id": row["session_id"],
+                    "path": row["path"],
+                    "referrer": row["referrer"],
+                }
+                for row in latest
+            ],
         }

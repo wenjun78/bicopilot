@@ -84,3 +84,16 @@ def test_api_starts_in_background_and_reports_readiness(tmp_path):
         assert health["ok"] is True and health["as_of"] == "2018-08-31"
         r = client.post("/chat", json={"question": "revenue by state 2017", "session_id": "bg"}).json()
         assert r["status"] == "answered" and r["row_count"] > 0
+
+
+def test_helper_tables_are_created_on_a_current_warehouse(tmp_path):
+    """A database loaded by an earlier build may lack tables added later (warehouse_cache); a restart on the
+    same warehouse version must still create them."""
+    eng = _engine(tmp_path)
+    ensure_warehouse(eng)
+    with eng.begin() as conn:
+        conn.execute(text("DROP TABLE warehouse_cache"))
+    assert ensure_warehouse(eng) is None
+    with eng.connect() as conn:
+        tables = {r[0] for r in conn.execute(text("SELECT name FROM sqlite_master WHERE type='table'"))}
+    assert "warehouse_cache" in tables

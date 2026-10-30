@@ -117,8 +117,10 @@ def ensure_warehouse(engine: Engine, csv_dir: Path = CSV_DIR) -> dict[str, int] 
     if warehouse_version(engine) != WAREHOUSE_VERSION:
         drop_warehouse(engine)
         init_schema(engine)
-    elif warehouse_ready(engine):
-        return None
+    else:
+        init_schema(engine)  # idempotent: picks up helper tables added since the data was loaded
+        if warehouse_ready(engine):
+            return None
     counts = load_csvs(engine, csv_dir)
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM warehouse_meta WHERE key = 'schema_version'"))

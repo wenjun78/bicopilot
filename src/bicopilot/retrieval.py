@@ -316,8 +316,16 @@ class Retriever:
         self.reranker = reranker
 
     def search(
-        self, question: str, metric_ids: list[str] = (), dimension_ids: list[str] = (), k: int | None = None
+        self,
+        question: str,
+        metric_ids: list[str] = (),
+        dimension_ids: list[str] = (),
+        k: int | None = None,
+        reranker: Reranker | None = None,
     ) -> list[Hit]:
+        """Hybrid search. `reranker` overrides the configured one for this call (the fast path passes the
+        lexical reranker so a confidently resolved question costs no model call here)."""
+        reranker = reranker or self.reranker
         k = k or self.settings.top_k_chunks
         q_tokens = tokenize(question)
         bm25 = self.bm25.score(q_tokens)
@@ -345,12 +353,12 @@ class Retriever:
         hits = [
             Hit(self.by_id[cid], s, bm25_rank.get(cid), dense_rank.get(cid), cid in structured) for cid, s in ranked
         ]
-        if self.reranker.name == "none":
+        if reranker.name == "none":
             return hits[:keep]
         # structured hits and the base table docs are pinned; the reranker reorders the rest of a wider pool
         pinned = [h for h in hits if h.structured or h.chunk.id in ALWAYS]
         pool = [h for h in hits if not (h.structured or h.chunk.id in ALWAYS)][: max(keep * 3, 12)]
-        reranked = self.reranker.rerank(
+        reranked = reranker.rerank(
             question,
             [Candidate(h.chunk.id, h.chunk.title, h.chunk.text) for h in pool],
             keep=max(keep - len(pinned), 0),

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import date
 
 from langgraph.graph import END, START, StateGraph
 
@@ -40,6 +41,33 @@ SCHEMA_WORDS = (
     "defined",
     "definition of",
 )
+
+
+META_CUES = (
+    "what can you",
+    "what do you know",
+    "which metrics",
+    "what metrics",
+    "how is",
+    "how do you define",
+    "what is the definition",
+    "help",
+)
+
+
+def _obvious_data_question(rt: Runtime, question: str) -> bool:
+    """A message that names a metric or a dimension from the semantic layer, is not a schema/meta question
+    and is not small talk, is a data question; no model is needed to say so."""
+    q = question.lower().strip()
+    if len(q) < 4 or q.rstrip("!.?") in {"hi", "hello", "hey", "thanks", "thank you", "ok", "yes", "no"}:
+        return False
+    if any(w in q for w in SCHEMA_WORDS) or any(c in q for c in META_CUES):
+        return False
+    try:
+        res = rt.semantic.resolve(question, date.fromisoformat(rt.semantic.as_of_default or "2018-08-31"))
+    except Exception:
+        return False
+    return bool(res.metrics or res.ambiguous)
 
 
 def schema_answer(rt: Runtime, question: str) -> str:
@@ -162,16 +190,26 @@ def build_graph(rt: Runtime):
         started = time.perf_counter()
         history = state.get("history", [])
         awaiting = bool(state.get("pending_question"))
-        user = f"LATEST MESSAGE: {state['question']}\nPREVIOUS TURNS: {history[-4:]}\nCOPILOT JUST ASKED A CLARIFYING QUESTION: {awaiting}"
-        out: RouterOut = rt.llm.structured(
-            "route", RouterOut, ROUTER_SYSTEM, user, {"question": state["question"], "awaiting_clarification": awaiting}
-        )
-        intent = out.intent
+        shortcut = _obvious_data_question(rt, state["question"]) if not awaiting else False
+        if shortcut:
+            intent = "data_question"
+        else:
+            user = f"LATEST MESSAGE: {state['question']}\nPREVIOUS TURNS: {history[-4:]}\nCOPILOT JUST ASKED A CLARIFYING QUESTION: {awaiting}"
+            out: RouterOut = rt.llm.structured(
+                "route",
+                RouterOut,
+                ROUTER_SYSTEM,
+                user,
+                {"question": state["question"], "awaiting_clarification": awaiting},
+            )
+            intent = out.intent
         if intent == "clarification_reply" and not awaiting:
             intent = "data_question"
         return {
             "intent": intent,
-            "trace": trace_event(state, "router", started, intent=intent),
+            "trace": trace_event(
+                state, "router", started, intent=intent, model="skipped (metric named)" if shortcut else "used"
+            ),
             "sql_attempts": [],
             "repairs": 0,
             "critic_loops": 0,

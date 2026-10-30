@@ -14,6 +14,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ..llm import FakeLLM
 from ..prompts import PLANNER_SYSTEM
+from ..rerank import LexicalReranker
 from ..semantic import Plan
 from .state import BIState, Runtime, trace_event
 
@@ -117,7 +118,11 @@ def build_planner(rt: Runtime):
     def retrieve(state: BIState) -> BIState:
         started = time.perf_counter()
         plan = Plan.model_validate(state["plan"])
-        hits = rt.retriever.search(state["question"], plan.metrics, plan.dimensions)
+        fast = bool(state.get("fast_path"))
+        # On the fast path the SQL is compiled, so the retrieved context only documents the answer; the
+        # lexical reranker gives the same ranks for that purpose without a model round trip.
+        override = LexicalReranker() if fast and rt.retriever.reranker.name == "llm" else None
+        hits = rt.retriever.search(state["question"], plan.metrics, plan.dimensions, reranker=override)
         chunks = [
             {
                 "id": h.chunk.id,
@@ -143,7 +148,7 @@ def build_planner(rt: Runtime):
                 }
                 for h in hits
             ],
-            "reranker": rt.retriever.reranker.name,
+            "reranker": (override or rt.retriever.reranker).name + (" (fast path)" if override else ""),
         }
         return {
             "context_chunks": chunks,

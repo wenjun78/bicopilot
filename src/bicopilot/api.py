@@ -191,7 +191,7 @@ def create_app(settings: Settings | None = None, copilot: Copilot | None = None)
         copilot_of(request)  # 503 while starting
         return request.app.state.analytics.summary(days)
 
-    @app.get("/healthz")
+    @app.api_route("/healthz", methods=["GET", "HEAD"])  # uptime monitors probe with HEAD
     def healthz(request: Request):
         if request.app.state.copilot is None:
             err = request.app.state.boot_error
